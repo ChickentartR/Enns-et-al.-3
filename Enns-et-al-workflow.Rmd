@@ -2,7 +2,7 @@
 title: "Enns et al. 3 R workflow"
 author: "Daniel Enns"
 date: "2024-10-17"
-output: html_document
+output: github_document
 ---
 
 ```{r setup, include=FALSE}
