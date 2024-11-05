@@ -1,0 +1,67 @@
+---
+title: "README"
+author: "Daniel Enns"
+date: "2024-10-17"
+allways_allow_html: yes
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Study outline
+
+Freshwater ecosystems exists in very heterogenous landscapes, including not only natural, but also anthropogenic "spatial features"[^1]. Can these features, like barriers, wastewater treatment plants, road & railroad crossings, etc. explain the ecological status of the freshwater fauna? In this study, we try to answer this question combining various spatial data sets and utilizing machine learning algorithms[^2].
+
+[^1]: [Carlisle et al. 2009](https://doi.org/10.1007/s10661-008-0256-z); [Marzin et al. 2013](https://doi.org/10.1007/s10750-012-1254-2); [Murphy & Davy-Bowker 2005](https://doi.org/10.1007/s10750-004-1451-8)
+
+[^2]: [Dedman et al. 2015](http://dx.doi.org/10.1016/j.ecolmodel.2015.05.010); [Elith et al. 2008](https://doi.org/10.1111/j.1365-2656.2008.01390.x); [Heß et al. 2023](http://dx.doi.org/10.1016/j.scitotenv.2023.162952); [Yu et al. 2020](https://doi.org/10.1016/j.ecolmodel.2020.109202)
+
+# Methods
+
+## Combining Spatial Data
+
+For the spatial analysis all necessary shape and raster files are projected into EPSG . The HLNUG stream network is a collection of 100 m long line segments and already contains information on the structural quality (1 - pristine, 7 - completly altered). Some additional editing in QGIS is required. For the SSNbler package to correctly construct landscape networks (LSN) the digitized flow needs to be inverted, via the reverse line direction tool.
+
+```{r fig.cap = "Usa catchment: observe how the first digits of the confluenting stream resemble the number from the main stream", echo=FALSE}
+str_net_plot
+```
+
+First check the stream network for connectivity issues and fix unconnected segments.
+
+plot:
+
+Select the most recent community data for each invertebrate-, fish- and algae WFD sampling site.
+
+code:
+
+Snap sampling site locations to the stream network, if necessary.
+
+code:
+
+plot:
+
+Snap the locations of anthropogenic "spatial features" to the stream network.
+
+code:
+
+plot:
+
+Download Highway and Railroad networks from OSM and locate stream network intersections.
+
+code:
+
+plot:
+
+Extract habitat structural quality classes at the WFD sampling site locations.
+
+code:
+
+Create watersheds with each WFD sampling site as a pour point.
+
+code:
+
+Load CORINE land cover data, selected for primary classification level and load riparian data.
+
+code:
