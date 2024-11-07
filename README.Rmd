@@ -2,12 +2,13 @@
 title: "README"
 author: "Daniel Enns"
 date: "2024-10-17"
-allways_allow_html: yes
-output: github_document
+output:
+  github_document: default
+always_allow_html: true
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE)
 ```
 
 # Study outline
@@ -20,48 +21,61 @@ Freshwater ecosystems exists in very heterogenous landscapes, including not only
 
 # Methods
 
+```{r load_libraries_data, include=FALSE}
+library(readxl)
+library(tidyverse)
+library(sf)
+library(sfnetworks)
+library(SSN2)
+library(SSNbler)
+library(riverdist)
+library(rivernet)
+library(geodata)
+library(whitebox)
+library(osmextract)
+library(httr2)
+library(tmap)
+
+stream_net <- st_read("./Data/stream_net/Gewässerstrukturgüte_Hessen_rev.shp") %>% 
+  select(geometry, GESAMT, HP3, GEWKZ, ABS) %>% st_cast("LINESTRING") %>% 
+  mutate(ABS = as.numeric(ABS)) 
+```
+
 ## Combining Spatial Data
 
-For the spatial analysis all necessary shape and raster files are projected into EPSG . The HLNUG stream network is a collection of 100 m long line segments and already contains information on the structural quality (1 - pristine, 7 - completly altered). Some additional editing in QGIS is required. For the SSNbler package to correctly construct landscape networks (LSN) the digitized flow needs to be inverted, via the reverse line direction tool.
+For the spatial analysis all necessary shape and raster files are projected into EPSG . The HLNUG stream network is a collection of 100 m long line segments, each containing a stream ID and a segment ID. The stream ID is designed in such a way, that it represents the one from the subsequent stream in which the current flows into, followed by additional numbers. The segment number increases towards the source of a stream (Fig. 1). Each 100 m segment already contains information on the habitats structural quality (1 - pristine, 7 - completly altered).
 
-```{r fig.cap = "Usa catchment: observe how the first digits of the confluenting stream resemble the number from the main stream", echo=FALSE}
+```{r create_figure,echo=FALSE , fig.cap = "Fig. 1: Example for stream- and segment ID. The segment number increases in the direction of the source. The stream ID of smaller confluence resembels always that of the bigger stream, in which it flows into, plus additional numbers."}
+
+
+str_net_plot <- stream_net %>% filter(str_starts(GEWKZ, "24848292")) %>% 
+  ggplot()+
+  geom_sf(
+    aes(
+      col = GEWKZ
+    ),
+    linewidth = 4
+  )+
+  geom_sf_text(
+    aes(label = ABS)
+    )+
+  labs(col = "stream ID")+
+  theme_bw()+
+  theme(
+    axis.title = element_blank(),
+    legend.position = "bottom"
+  )
 str_net_plot
 ```
 
-First check the stream network for connectivity issues and fix unconnected segments.
+The stream network can be dissolved in QGIS using the dissolve tool and subsequently we can build an initial landscape network (LSN) using the `lines_to_lsn()` function from the [SSNbler](https://cran.r-project.org/web/packages/SSNbler/index.html) package, where we set the snap tolerance of nodes to 3 m and the topology tolerance to 30 m (note that the digitized flow needs to lead from source to outlet points). The summary of the node error report reveals that the network is highly erroneous. (For more detail on the LSN parameters and error types see [Peterson & Pearse 2024](https://github.com/pet221/SSNbler/blob/main/inst/tutorials/Topology_Editing/QGIS/TopologyEditing_QGIS.pdf))
 
-plot:
+```{r read_node_errors, include=FALSE}
+node_errors <- st_read("./Data/SSNbler/node_errors.gpkg") %>% modify_if(is.character, as.factor)
+```
 
-Select the most recent community data for each invertebrate-, fish- and algae WFD sampling site.
+```{r summary_node_errors, echo=FALSE}
+summary(node_errors)
+```
 
-code:
-
-Snap sampling site locations to the stream network, if necessary.
-
-code:
-
-plot:
-
-Snap the locations of anthropogenic "spatial features" to the stream network.
-
-code:
-
-plot:
-
-Download Highway and Railroad networks from OSM and locate stream network intersections.
-
-code:
-
-plot:
-
-Extract habitat structural quality classes at the WFD sampling site locations.
-
-code:
-
-Create watersheds with each WFD sampling site as a pour point.
-
-code:
-
-Load CORINE land cover data, selected for primary classification level and load riparian data.
-
-code:
+Fixing topological errors in the entire network, manually and using GRASS GIS tools, would take too much time.
