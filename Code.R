@@ -25,17 +25,22 @@ setwd("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/Data")
 
 # load data
 stream_net <- st_read("./stream_net/Gewässerstrukturgüte_Hessen_rev.shp") %>% 
-  select(geometry, GESAMT, HP3, GEWKZ, ABS) %>% st_cast("LINESTRING") %>% 
-  mutate(ABS = as.numeric(ABS))
+  select(geometry, GESAMT, HP3, GEWKZ, ABS, NAME) %>% st_cast("LINESTRING") %>% 
+  mutate(ABS = as.numeric(ABS)) 
 
-#create dissolved streams !!! removes some streams !!!
-stream_net_dis <- stream_net %>% select(GEWKZ, geometry) %>% 
-  group_by(GEWKZ) %>% summarize(geometry = st_union(geometry)) %>% st_cast("LINESTRING") 
+ggplot(stream_net)+
+  geom_sf(aes(col = factor(str_length(GEWKZ))))+
+  facet_wrap(vars(str_length(GEWKZ)))+
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "none"
+  )
 
 # build initial LSN
 lines_to_lsn(
-  stream_net,
-  ".",
+  stream_net_dis,
+  "./SSNbler",
   check_topology = T,
   snap_tolerance = 3, 
   topo_tolerance = 30,
@@ -83,7 +88,7 @@ storm <- st_read()
 
 wwtp <- cbind(wwtp, stream_net[st_nearest_feature(wwtp, stream_net),3:4]) %>% select(-geometry.1)
 
-## 1.5 OSM Highways ####
+## 4. OSM Highways ####
 ### 1.5.1 query Highways from OSM ####
 
 # buold SQL like query
