@@ -14,6 +14,18 @@ spatial data sets and utilizing machine learning algorithms[^2].
 
 # Methods
 
+<<<<<<< HEAD
+=======
+    ## Reading layer `Gewässerstrukturgüte_Hessen_rev' from data source 
+    ##   `C:\Users\Daniel Enns\Documents\Promotion\MZB\Enns-et-al.-3\Data\stream_net\Gewässerstrukturgüte_Hessen_rev.shp' 
+    ##   using driver `ESRI Shapefile'
+    ## Simple feature collection with 214268 features and 15 fields
+    ## Geometry type: MULTILINESTRING
+    ## Dimension:     XY
+    ## Bounding box:  xmin: 412134 ymin: 5471424 xmax: 593632.6 ymax: 5723079
+    ## Projected CRS: ETRS89 / UTM zone 32N
+
+>>>>>>> 8a2a811867c81ff6c0c72ce1dea92df7e23ed6cd
 ## Combining Spatial Data
 
 For the spatial analysis all necessary shape and raster files are
@@ -35,6 +47,7 @@ stream, in which it flows into, plus additional numbers.</figcaption>
 </figure>
 
 The stream network can be dissolved in QGIS using the dissolve tool and
+<<<<<<< HEAD
 subsequently we can build an initial landscape network (LSN) using the
 `lines_to_lsn()` function from the
 [SSNbler](https://cran.r-project.org/web/packages/SSNbler/index.html)
@@ -45,6 +58,26 @@ reveals that the network is highly erroneous. (For more detail on the
 LSN parameters and error types see [Peterson & Pearse
 2024](https://github.com/pet221/SSNbler/blob/main/inst/tutorials/Topology_Editing/QGIS/TopologyEditing_QGIS.pdf))
 
+=======
+subsequently we can build an initial landscape network (LSN) using
+lines_to_lsn() from the SSNbler package, where we set the snap tolerance
+of nodes to 3 m and the topology tolerance to 30 m (note that the
+digitized flow needs to lead from source to outlet points). The summary
+of the node error report reveals that the network is highly erroneous.
+(For more detail on the LSN parameters and error types see [Peterson &
+Pearse
+2024](https://github.com/pet221/SSNbler/blob/main/inst/tutorials/Topology_Editing/QGIS/TopologyEditing_QGIS.pdf))
+
+    ## Reading layer `node_errors' from data source 
+    ##   `C:\Users\Daniel Enns\Documents\Promotion\MZB\Enns-et-al.-3\Data\SSNbler\node_errors.gpkg' 
+    ##   using driver `GPKG'
+    ## Simple feature collection with 19406 features and 3 fields
+    ## Geometry type: POINT
+    ## Dimension:     XY
+    ## Bounding box:  xmin: 412351.7 ymin: 5471453 xmax: 586672.1 ymax: 5722049
+    ## Projected CRS: ETRS89 / UTM zone 32N
+
+>>>>>>> 8a2a811867c81ff6c0c72ce1dea92df7e23ed6cd
     ##     pointid            nodecat                            error      
     ##  Min.   :    2   Confluence: 9239   Converging Node          :   54  
     ##  1st Qu.: 5190   Outlet    :10167   Dangling Node            :19172  
@@ -62,8 +95,49 @@ LSN parameters and error types see [Peterson & Pearse
     ##                       
     ## 
 
+<<<<<<< HEAD
 Fixing topological errors in the entire network, manually and using
 GRASS GIS tools, would take too much time.
+=======
+Select the most recent community data for each invertebrate-, fish- and
+algae WFD sampling site.
+
+code:
+
+Snap sampling site locations to the stream network, if necessary.
+
+code:
+
+plot:
+
+Snap the locations of anthropogenic “spatial features” to the stream
+network.
+
+code:
+
+plot:
+
+Download Highway and Railroad networks from OSM and locate stream
+network intersections.
+
+code:
+
+plot:
+
+Extract habitat structural quality classes at the WFD sampling site
+locations.
+
+code:
+
+Create watersheds with each WFD sampling site as a pour point.
+
+code:
+
+Load CORINE land cover data, selected for primary classification level
+and load riparian data.
+
+code:
+>>>>>>> 8a2a811867c81ff6c0c72ce1dea92df7e23ed6cd
 
 [^1]: [Carlisle et al. 2009](https://doi.org/10.1007/s10661-008-0256-z);
     [Marzin et al. 2013](https://doi.org/10.1007/s10750-012-1254-2);
