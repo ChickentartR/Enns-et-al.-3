@@ -3,6 +3,7 @@
 
 library(readxl)
 library(tidyverse)
+library(stars)
 library(sf)
 library(sfnetworks)
 library(SSN2)
@@ -27,15 +28,6 @@ setwd("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/Data")
 stream_net <- st_read("./stream_net/Gewässerstrukturgüte_Hessen_rev.shp") %>% 
   select(geometry, GESAMT, HP3, GEWKZ, ABS, NAME) %>% st_cast("LINESTRING") %>% 
   mutate(ABS = as.numeric(ABS)) 
-
-ggplot(stream_net)+
-  geom_sf(aes(col = factor(str_length(GEWKZ))))+
-  facet_wrap(vars(str_length(GEWKZ)))+
-  theme(
-    axis.text = element_blank(),
-    axis.ticks = element_blank(),
-    legend.position = "none"
-  )
 
 # build initial LSN
 lines_to_lsn(
@@ -130,9 +122,22 @@ highways <- vect("highways.shp")
 # count number of WWTPs
 mzb <- mzb %>% rowwise() %>%  mutate(NUM_WWTP =
         sum( ifelse( str_starts(wwtp$GEWKZ, GEWKZ), 1, 0))-
-          sum(ifelse((wwtp$GEWKZ %in% GEWKZ) & (ABS > wwtp$ABS), 1, 0))
+          sum(ifelse((wwtp$GEWKZ %in% GEWKZ) & (ABS >= wwtp$ABS), 1, 0))
 )
 
 ## preparation of stream network
 
 # group by stream ID (gwz) and unify, summing up shape_LEN
+## Z. watershed delineation ####
+
+# reduce stream network
+stream_net_red7 <- stream_net %>% filter(str_length(GEWKZ) <= 7) %>% group_by(GEWKZ) %>% summarize(geometry = st_union(geometry)) %>% st_cast("LINESTRING")
+
+# load in SRTM 30m raster
+srtm_30 <- read_stars("./DEM/output_SRTMGL1.tif")
+
+# union stream network
+stream_net_dis <- stream_net %>% mutate(geometry = )
+
+# rasterize stream network
+test <- stream_net %>% st_transform(st_crs(srtm_30)) %>% st_rasterize(srtm_30, options = "ALL_TOUCHED=TRUE", align = T)
