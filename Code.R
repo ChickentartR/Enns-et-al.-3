@@ -144,38 +144,48 @@ net_rout <- as_sfnetwork(str_net_rout) %>% convert(to_spatial_simple) %>% conver
 # blend in Bio and stressor data as nodes
 net_rout_blend <- st_network_blend(net_rout, mzb) %>% st_network_blend(.,wwtp)
 
-# write function to filter for upstream reaches and count stressors
-upstream_count <- function(start){
-  igraph::shortest_paths(net_rout_blend, from = start, to = igraph::V(net_rout_blend), mode = "in") %>% 
-        unlist(.$vpath) %>% unique() %>% st_as_sf(net_rout_blend, "nodes")[.,] %>% st_drop_geometry() %>% 
-        filter(!is.na(CON_HOUSE)) %>% count()
-}
-
+#extract bio nodes for querying
 nodes <- st_as_sf(net_rout_blend, "nodes")
 data_allocated <- nodes %>% filter(!is.na(ID_SITE)) %>% 
   mutate(ID_NODE = row.names(nodes)[with(nodes, !is.na(ID_SITE))])
 
-test <- data_allocated %>% rowwise() %>% mutate(num_wwtp = upstream_count(ID_NODE))
+# write function to filter for upstream reaches and count/sum stressor variables
+upstream_count <- function(net, start, col, stat) {
+  col <- ensym(col)  # Ensure the column is properly quoted for non-standard evaluation
+  
+  if (class(net)[1] != "sfnetwork") {
+    stop("net must be an sfnetwork object!") #check for valid network input
+  }
+  
+  if (!(stat %in% c("count", "sum"))) {
+    stop("stat must either be 'count' or 'sum'!") # check for valid stat input
+  }
+  
+  # Perform the analysis and filtering steps
+  tbl <- suppressWarnings(igraph::shortest_paths(net, from = start, to = igraph::V(net), mode = "in")) %>%
+    unlist(.$vpath) %>%
+    unique() %>%
+    st_as_sf(net, "nodes")[.,] %>%
+    filter(!is.na(!!col))  # Filter out NA values
+  
+  # Handle the case when 'stat' is either 'count' or 'sum'
+  if (stat == "count") {
+    result <- nrow(tbl)  # Count the rows
+    } 
+  else {
+    result <- sum(tbl[[as.character(col)]], na.rm = TRUE)  # Sum the values in the specified column
+    }
+  
+  return(result)
+    }
 
-# test section ####
-
-x <- igraph::shortest_paths(net_rout_blend, from = 1, to = igraph::V(net_rout_blend), mode = "in") %>% 
-  unlist(.$vpath) %>% unique()
+upstream_count.2(net_rout_blend ,20348, CON_HOUSE, "count")
 
 # summarize colmuns values
 test <- st_as_sf(net_rout_blend, "nodes")[x,] %>% st_drop_geometry() %>% filter(!is.na(CON_HOUSE)) %>% summarize(sum(CON_HOUSE))
 
 # count instances
 test <- st_as_sf(net_rout_blend, "nodes")[x,] %>% st_drop_geometry() %>% filter(!is.na(CON_HOUSE)) %>% count()
-
-up.ss <- rep(FALSE, nrow(st_as_sf(net_rout_blend, "nodes")))
-up.ss[x] <- TRUE
-
-net_rout_blend %>% activate("nodes") %>% filter(up.ss) %>% autoplot()
-
-net_rout_blend %>% activate("nodes") %>% filter(up.ss) %>% st_as_sf("edges") %>% tm_shape()+tm_lines()+
-  net_rout_blend %>% activate("nodes") %>% filter(up.ss) %>% st_as_sf("nodes") %>% tm_shape()+tm_dots(col="ID_WWTP", colorNA = NULL)+
-  net_rout_blend %>% activate("nodes") %>% filter(up.ss) %>% st_as_sf("nodes") %>% tm_shape()+tm_dots(col="ID_SITE", colorNA = NULL)
 
 ## Z. watershed delineation ####
 
