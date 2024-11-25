@@ -38,7 +38,7 @@ upstream_summarize <- function(net, start, col, stat, count) {
     filter(!is.na(!!col))  # Filter out NA values
   
   # Handle the case when 'stat' is either 'count' or 'sum'
-  if (count == T) {
+  if (stat == "count") {
     result <- nrow(tbl)  # Count the rows
   } 
   else {
