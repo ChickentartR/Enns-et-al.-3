@@ -15,19 +15,24 @@ library(osmextract)
 library(httr2)
 library(tmap)
 
-#install_whitebox()
+# install_whitebox()
 wbt_init()
 setwd("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/Data")
 
+# source function for data allocation
+source("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/R/upstream_summarize.R")
 
 ## 1 Stream network from HLNUG ####
-## SSNbler Workflow
 
-# load data
+# load stream network data
 stream_net <- st_read("./stream_net/stream_net_rev.gpkg") %>% 
   select(geom, GESAMT, HP3, GEWKZ, ABS, NAME) %>% st_cast("LINESTRING") %>% 
   mutate(ABS = as.numeric(ABS)) 
 
+# load outline of Hesse
+hess <- gadm("Deu", level = 1, tempfile()) %>% subset(.$NAME_1 == "Hessen")
+
+# SSNbler Workflow
 # build initial LSN
 lines_to_lsn(
   stream_net,
@@ -78,62 +83,16 @@ wwtp <- read_delim("./WWTP.csv", delim = ";") %>%
 
 storm <- st_read()
 
-# check overlap with stream network
-
-wwtp <- cbind(wwtp, stream_net[st_nearest_feature(wwtp, stream_net),3:4]) %>% select(-geometry.1)
-
 ## 4. OSM Highways ####
-### 1.5.1 query Highways from OSM ####
 
-# buold SQL like query
-hw_vectrotrans <- c(
-  "-select", "osm_id,highway",
-  "-where", "highway IN ('motorway')"
-)
+# read osm data and filter for highways and railways
+transport_net <- oe_read("./OSM/hessen-latest.osm.pbf", extra_tags = "railway") %>% st_transform(25832) %>% 
+select(osm_id, highway, railway, geometry) %>% filter(highway == "motorway" | railway == "rail") %>% unite("type", highway, railway, na.rm = T)
 
-# read in data
-highways <- oe_get("Hessen",
-                   layer = "lines",
-                   vectortranslate_options = mjr_vectrotrans,
-                   boundary = st_as_sf(hess)
-) %>% as_spatvector() 
-
-# plot
-plot(highways)
-
-# save & load file
-writeVector(stream_vec_osm,"highways.shp")
-highways <- vect("highways.shp")
-
-### 1.5.2 extract nodes from higway-stream net. crossings ####
-
-## Y. Delineate catchments ####
-
-## Burn DEM
-
-## D8 flow accumulation
-
-## D8 pointer grid
-
-## snap pour points
-
-## delineate watersheds
+# extract highway and railway crossings with stream net
+crossings <- st_intersection(stream_net, transport_net) %>% select(osm_id, type, geom)
 
 ## X. Data allocation ####
-
-end_points <- stream_net %>% filter(ABS == 1) %>% st_boundary() %>% st_cast("POINT") %>% group_by(GEWKZ) %>% slice_tail()
-
-test <- st_nearest_feature(end_points, stream_net)
-
-st_write(test,"./stream_net/test.shp")
-
-# count number of WWTPs
-mzb <- mzb %>% rowwise() %>%  mutate(NUM_WWTP =
-        sum( ifelse( str_starts(wwtp$GEWKZ, GEWKZ), 1, 0))-
-          sum(ifelse((wwtp$GEWKZ %in% GEWKZ) & (ABS >= wwtp$ABS), 1, 0))
-)
-
-## Allocate Data by routing ####
 
 # round coordinates of stream network
 str_net_rout <- st_set_precision(stream_net, 0.01)
@@ -149,43 +108,7 @@ nodes <- st_as_sf(net_rout_blend, "nodes")
 data_allocated <- nodes %>% filter(!is.na(ID_SITE)) %>% 
   mutate(ID_NODE = row.names(nodes)[with(nodes, !is.na(ID_SITE))])
 
-# write function to filter for upstream reaches and count/sum stressor variables
-upstream_count <- function(net, start, col, stat) {
-  col <- ensym(col)  # Ensure the column is properly quoted for non-standard evaluation
-  
-  if (class(net)[1] != "sfnetwork") {
-    stop("net must be an sfnetwork object!") #check for valid network input
-  }
-  
-  if (!(stat %in% c("count", "sum"))) {
-    stop("stat must either be 'count' or 'sum'!") # check for valid stat input
-  }
-  
-  # Perform the analysis and filtering steps
-  tbl <- suppressWarnings(igraph::shortest_paths(net, from = start, to = igraph::V(net), mode = "in")) %>%
-    unlist(.$vpath) %>%
-    unique() %>%
-    st_as_sf(net, "nodes")[.,] %>%
-    filter(!is.na(!!col))  # Filter out NA values
-  
-  # Handle the case when 'stat' is either 'count' or 'sum'
-  if (stat == "count") {
-    result <- nrow(tbl)  # Count the rows
-    } 
-  else {
-    result <- sum(tbl[[as.character(col)]], na.rm = TRUE)  # Sum the values in the specified column
-    }
-  
-  return(result)
-    }
-
-upstream_count.2(net_rout_blend ,20348, CON_HOUSE, "count")
-
-# summarize colmuns values
-test <- st_as_sf(net_rout_blend, "nodes")[x,] %>% st_drop_geometry() %>% filter(!is.na(CON_HOUSE)) %>% summarize(sum(CON_HOUSE))
-
-# count instances
-test <- st_as_sf(net_rout_blend, "nodes")[x,] %>% st_drop_geometry() %>% filter(!is.na(CON_HOUSE)) %>% count()
+system.time(data_allocated %>% slice(1:100) %>% rowwise() %>% mutate(upstream_summarize(net_rout_blend,ID_NODE,c("CON_HOUSE","TOT_WASTE"),"ID_WWTP",F)))
 
 ## Z. watershed delineation ####
 
@@ -233,7 +156,6 @@ wbt_watershed(
 
 # load and plot watersheds
 watershed <- read_stars("./DEM/watersheds.tif") %>% st_as_sf(merge = T)
-
 
 # extract streams only for/ move to README
 wbt_extract_streams(
