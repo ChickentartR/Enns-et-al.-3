@@ -14,36 +14,40 @@
 
 # start - row number of node, from which upstream reache should be calculated.
 
-# col - column from which the data should be summarized
+# cols - columns from which the data should be summarized
 
-# stat - method of summarization. When stat = 'sum' then col must be numeric 
+# IDs - IDs of nodes, which should be counted. Not the row number of nodes!
+
+# overwrite - should output be written in input columns? 
 
 # Code ####
-upstream_summarize <- function(net, start, col, stat, count) {
-  col <- ensym(col)  # Ensure the column is properly quoted for non-standard evaluation
-
+upstream_summarize <- function(net, start, cols, IDs, overwrite) {
+  
   if (class(net)[1] != "sfnetwork") {
     stop("net must be an sfnetwork object!", call. = F)  # check for valid network input
   }
   
-  if (!(stat %in% c("count", "sum"))) {
-    stop("stat must either be 'count' or 'sum'!", call. = F)  # check for valid stat input
+  if(typeof(overwrite) != "logical") {
+    stop("overwrite must be TRUE or FALSE!")
   }
   
   # Perform the analysis and filtering steps
   tbl <- suppressWarnings(igraph::shortest_paths(net, from = start, to = igraph::V(net), mode = "in")) %>%
     unlist(.$vpath) %>%
     unique() %>%
-    st_as_sf(net, "nodes")[.,] %>%
-    filter(!is.na(!!col))  # Filter out NA values
+    st_as_sf(net, "nodes")[.,]
+
+  # Calculate the sum of each column in 'cols'
+  if(overwrite == F){
+  tbl_sum <- tbl %>% as.data.frame() %>% 
+    summarise(across(.cols = all_of(cols), ~sum(.x, na.rm = T), .names = "sum_{.col}"),
+              across(.cols = all_of(IDs), ~sum(!is.na(.x)), .names = "num_{.col}"))
+  } else if(overwrite == T) {
+    tbl_sum <- tbl %>% as.data.frame() %>% 
+      summarise(across(.cols = all_of(cols), ~sum(.x, na.rm = T)),
+                across(.cols = all_of(IDs), ~sum(!is.na(.x)), .names = "num_{.col}"))
+                }
   
-  # Handle the case when 'stat' is either 'count' or 'sum'
-  if (stat == "count") {
-    result <- nrow(tbl)  # Count the rows
-  } 
-  else {
-    result <- sum(tbl[[as.character(col)]], na.rm = TRUE)  # Sum the values in the specified column
-  }
-  
-  return(result)
+  # Return the summarized table with sums
+  return(as.data.frame(tbl_sum))
 }
