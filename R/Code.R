@@ -3,13 +3,14 @@
 
 library(readxl)
 library(tidyverse)
+library(geodata)
 library(stars)
 library(sf)
+library(nngeo)
 library(sfnetworks)
 library(tidygraph)
 library(SSN2)
 library(SSNbler)
-library(geodata)
 library(whitebox)
 library(osmextract)
 library(httr2)
@@ -30,7 +31,7 @@ stream_net <- st_read("./stream_net/stream_net_rev.gpkg") %>%
   mutate(ABS = as.numeric(ABS)) 
 
 # load outline of Hesse
-hess <- gadm("Deu", level = 1, tempfile()) %>% subset(.$NAME_1 == "Hessen")
+hess <- gadm("Deu", level = 1, tempfile()) %>% subset(.$NAME_1 == "Hessen") %>% st_as_sf()
 
 # SSNbler Workflow
 # build initial LSN
@@ -57,13 +58,17 @@ summary(node_errors)
 
 ## 2. Bio sampling data ####
 
-## select most recent sampling for macrobenthos ...
-mzb <- read_delim("./EQC_MZB.csv", delim = ";") %>% 
+# select most recent sampling for macrobenthos ...
+mzb <- read_delim("./Bio_data/EQC_MZB.csv", delim = ";") %>% 
   mutate(EQC = factor(EQC)) %>% group_by(ID_SITE) %>% arrange(desc(YEAR)) %>% slice_head() %>% 
   st_as_sf(coords = c("UTM_EAST", "UTM_NORTH"), crs = st_crs(25832)) 
 
+# get infos from stream network and remove sites from streams/rivers with uncomplete catchments
+mzb <- cbind(mzb, stream_net[st_nearest_feature(mzb, stream_net),]) %>% select(-geom) %>% 
+  filter(!GEWKZ  %in% c("2", "238", "24", "41", "4", "44", "239152", "23932", "2396", "23988", "24779892"), !ID_SAMPLE == "1210718")
+
 # save as shapefile for watershed delineation
-st_write(mzb, "./Bio_data/MZB.shp")
+st_write(mzb, "./Bio_data/MZB.shp", append = F)
 
 ## ... for fish
 
@@ -71,17 +76,19 @@ st_write(mzb, "./Bio_data/MZB.shp")
 
 ## ... for macrophytes
 
-## check overlap with stream network
-
-mzb <- cbind(mzb, stream_net[st_nearest_feature(mzb, stream_net),]) %>% select(-geometry.1)
-
-## 3. WWTP & Storm overflow ####
+## 3. WWTP, Storm overflow & Dams ####
 
 # load data
-wwtp <- read_delim("./WWTP.csv", delim = ";") %>% 
+wwtp <- read_delim("./Antropo_data/WWTP.csv", delim = ";") %>% 
   st_as_sf(coords = c("UTM_EAST", "UTM_NORTH"), crs = st_crs(25832))
 
-storm <- st_read()
+storm <- read_delim("./Antropo_data/SWOF.csv", delim = ";") %>% 
+  st_as_sf(coords = c("Ostwert", "Nordwert"), crs = st_crs(25832)) %>% 
+  select(OBJECTID) %>% rename(SWOF_ID = OBJECTID)
+
+barriers <- read_delim("./Antropo_data/AMBER/AMBER_all.csv", delim = ";") %>% 
+  st_as_sf(coords = c("Longitude_WGS84", "Latitude_WGS84"), crs = st_crs(4326)) %>% 
+  st_filter(hess) %>% select(GUID, type) %>% st_transform(25832)
 
 ## 4. OSM Highways ####
 
@@ -92,31 +99,7 @@ select(osm_id, highway, railway, geometry) %>% filter(highway == "motorway" | ra
 # extract highway and railway crossings with stream net
 crossings <- st_intersection(stream_net, transport_net) %>% select(osm_id, type, geom)
 
-## X. Data allocation ####
-
-# round coordinates of stream network
-str_net_rout <- st_set_precision(stream_net, 0.01)
-
-# create sfnetwork object
-net_rout <- as_sfnetwork(str_net_rout) %>% convert(to_spatial_simple) %>% convert(to_spatial_smooth)
-
-# blend in Bio and stressor data as nodes
-net_rout_blend <- st_network_blend(net_rout, mzb) %>% st_network_blend(.,wwtp)
-
-#extract bio nodes for querying
-nodes <- st_as_sf(net_rout_blend, "nodes")
-data_allocated <- nodes %>% filter(!is.na(ID_SITE)) %>% 
-  mutate(ID_NODE = row.names(nodes)[with(nodes, !is.na(ID_SITE))])
-
-system.time(data_allocated %>% slice(1:100) %>% rowwise() %>% mutate(upstream_summarize(net_rout_blend,ID_NODE,c("CON_HOUSE","TOT_WASTE"),"ID_WWTP",F)))
-
-## Z. watershed delineation ####
-
-# load burned DEM
-DEM <- read_stars("./DEM/SRTMGL1_30m_2px_burned.tif")
-
-# load rasterized stream network
-stream_net_dis <- st_read("./stream_net/stream_net_dis.gpkg")
+## 5. watershed delineation ####
 
 # breach and fill pits in raster
 wbt_breach_depressions_least_cost(
@@ -137,15 +120,20 @@ wbt_d8_pointer(
   output = "./DEM/D8pointer.tif"
 )
 
+# extract streams
+wbt_extract_streams(
+  flow_accum = "./DEM/D8FA.tif",
+  output = "./DEM/stream_raster.tif",
+  threshold = 700
+)
+
 # snap points to stream raster
 wbt_jenson_snap_pour_points(
   pour_pts = "./Bio_data/MZB.shp",
-  streams = "./DEM/HLNUG_raster.tif",
+  streams = "./DEM/stream_raster.tif",
   output = "./Bio_data/MZB_snap.shp",
   snap_dist = 300
 )
-
-# !!! MASK D8POINTER BEFORE DELINEATION !!!
 
 # delineate watersheds
 wbt_watershed(
@@ -154,13 +142,38 @@ wbt_watershed(
   output = "./DEM/watersheds.tif"
 )
 
-# load and plot watersheds
-watershed <- read_stars("./DEM/watersheds.tif") %>% st_as_sf(merge = T)
+# Convert watershed raster to polygon
+ws <- read_stars("./DEM/watersheds.tif") %>% st_as_sf(as_points = F, merge = T)
 
-# extract streams only for/ move to README
-wbt_extract_streams(
-  flow_accum = "./DEM/D8FA.tif",
-  output = "./DEM/stream_raster.tif",
-  threshold = 700
-)
-stream_raster <- read_stars("./DEM/stream_raster.tif")
+## 6. sample CLC by watersheds ####
+
+# load CLC
+clc <- st_read("./CLC/CLC_2018.gpkg")
+
+# intersect with watersheds and create dataframe
+clc_ws <- st_intersection(clc, ws) %>% mutate(area = st_area(.)) %>% st_drop_geometry() %>% 
+  as.data.frame() %>% select(-CLC_201) %>% filter(!is.na(type))
+
+clc_tab <- clc_ws %>% group_by(watersheds.tif, type) %>% summarize(area = sum(area)) %>% 
+  pivot_wider(names_from = type, values_from = area)
+
+# combine watersheds with CLC area data
+ws_clc <- left_join(ws, clc_tab, by = "watersheds.tif")
+
+## 7. Data allocation ####
+
+# round coordinates of stream network
+str_net_rout <- st_set_precision(stream_net, 0.01)
+
+# create sfnetwork object
+net_rout <- as_sfnetwork(str_net_rout) %>% convert(to_spatial_simple) %>% convert(to_spatial_smooth)
+
+# blend in Bio and stressor data as nodes
+net_rout_blend <- st_network_blend(net_rout, mzb) %>% st_network_blend(.,wwtp)
+
+#extract bio nodes for querying
+nodes <- st_as_sf(net_rout_blend, "nodes")
+data_allocated <- nodes %>% filter(!is.na(ID_SITE)) %>% 
+  mutate(ID_NODE = row.names(nodes)[with(nodes, !is.na(ID_SITE))])
+
+system.time(data_allocated %>% slice(1:100) %>% rowwise() %>% mutate(upstream_summarize(net_rout_blend,ID_NODE,c("CON_HOUSE","TOT_WASTE"),"ID_WWTP",F)))
