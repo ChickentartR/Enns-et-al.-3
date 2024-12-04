@@ -46,16 +46,16 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
   
   # Check presence of columns in data
   if (any(!(node_cols %in% colnames(st_as_sf(net,"nodes"))))) {
-    stop("Column name not found in net!", call. = F)
+    stop("Column name not found in net!")
   }
   
   if (!is.null(area) & is.null(area_cols)) {
-    stop("must provide area_cols if area is given!", call. = F)
+    stop("must provide area_cols if area is given!")
   }
   
   if (!is.null(area_cols)) {
   if (any(!(area_cols %in% colnames(area)))) {
-    stop("Column name not found in area!", call. = F)}
+    stop("Column name not found in area!")}
   }
   
   # Perform the analysis and filtering steps
@@ -73,7 +73,7 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
   
   # select watersheds
   if (!is.null(area)) {
-    area_poly <- st_filter(area, tab_edges, .predicate = st_intersects) %>% 
+    area_poly <- st_filter(area, st_shift(tab_nodes, st_centroid(st_union(tab_nodes)), 0.001), .predicate = st_intersects) %>% 
       st_union() %>% st_remove_holes() %>% st_buffer(dist = -threshold)
     
     # sample area by filled area polygon and summarize
