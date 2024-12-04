@@ -64,7 +64,6 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
     unique()
     
   tab_nodes <-  st_as_sf(net, "nodes")[nodes_us,]
-  tab_edges <-  st_as_sf(net, "edges") %>% filter((to != from) & ((to %in% nodes_us) | (from %in% nodes_us & from != start)))
 
   # Calculate the sum of each column in 'cols'
   tab_sum <- tab_nodes %>% as.data.frame() %>% 
@@ -73,8 +72,10 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
   
   # select watersheds
   if (!is.null(area)) {
-    area_poly <- st_filter(area, st_shift(tab_nodes, st_centroid(st_union(tab_nodes)), 0.001), .predicate = st_intersects) %>% 
-      st_union() %>% st_remove_holes() %>% st_buffer(dist = -threshold)
+    area_poly <- st_filter(area, st_shift(tab_nodes, st_centroid(st_union(tab_nodes)), 0.001), .predicate = st_intersects) 
+    
+    if(any(!st_is(area_poly, "POLYGON"))) {stop("there were non-polygon geometries created!")}
+    else {area_poly <- area_poly %>% st_union() %>% st_remove_holes() %>% st_buffer(dist = -threshold)}
     
     # sample area by filled area polygon and summarize
     area_sum <- st_filter(area, area_poly, .predicate = st_intersects) %>% 
