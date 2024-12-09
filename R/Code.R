@@ -22,7 +22,9 @@ setwd("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/Data")
 
 # source function for data allocation
 source("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/R/upstream_summarize.R")
+source("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/R/st_shift.R")
 
+# I. Data generation ####
 ## 1 Stream network from HLNUG ####
 
 # load stream network data
@@ -59,13 +61,20 @@ summary(node_errors)
 ## 2. Bio sampling data ####
 
 # select most recent sampling for macrobenthos ...
-mzb <- read_delim("./Bio_data/EQC_MZB.csv", delim = ";") %>% 
-  mutate(EQC = factor(EQC)) %>% group_by(ID_SITE) %>% arrange(desc(YEAR)) %>% slice_head() %>% 
-  st_as_sf(coords = c("UTM_EAST", "UTM_NORTH"), crs = st_crs(25832)) 
+mzb <- read_delim("./Bio_data/EQC_MZB.csv", delim = ";") 
+
+# get average EQC & Taxa richness
+mzb_avg <- mzb %>% group_by(ID_SITE) %>% summarize(EQC_mean = round(mean(EQC)), Taxa_mean = mean(NUM_TAXA))
+
+# join with averages
+mzb <- left_join(mzb, mzb_avg, "ID_SITE")
+
+mzb <- mzb %>% mutate(EQC = factor(EQC)) %>% group_by(ID_SITE) %>% arrange(desc(YEAR)) %>% 
+  slice_head() %>% st_as_sf(coords = c("UTM_EAST", "UTM_NORTH"), crs = st_crs(25832)) 
 
 # get infos from stream network and remove sites from streams/rivers with uncomplete catchments
 mzb <- cbind(mzb, stream_net[st_nearest_feature(mzb, stream_net),]) %>% select(-geom) %>% 
-  filter(!GEWKZ  %in% c("2", "238", "24", "41", "4", "44", "239152", "23932", "2396", "23988", "24779892"), !ID_SAMPLE == "1210718")
+  filter(!GEWKZ  %in% c("2", "238", "24", "41", "4", "44", "239152", "23932", "2396", "23988", "24779892"), !ID_SAMPLE %in% c("1210718","1273528"))
 
 # save as shapefile for watershed delineation
 st_write(mzb, "./Bio_data/MZB.shp", append = F)
@@ -80,24 +89,28 @@ st_write(mzb, "./Bio_data/MZB.shp", append = F)
 
 # load data
 wwtp <- read_delim("./Antropo_data/WWTP.csv", delim = ";") %>% 
-  st_as_sf(coords = c("UTM_EAST", "UTM_NORTH"), crs = st_crs(25832))
+  st_as_sf(coords = c("UTM_EAST", "UTM_NORTH"), crs = st_crs(st_crs(stream_net)))
 
 storm <- read_delim("./Antropo_data/SWOF.csv", delim = ";") %>% 
-  st_as_sf(coords = c("Ostwert", "Nordwert"), crs = st_crs(25832)) %>% 
+  st_as_sf(coords = c("Ostwert", "Nordwert"), crs = st_crs(st_crs(stream_net))) %>% 
   select(OBJECTID) %>% rename(SWOF_ID = OBJECTID)
 
 barriers <- read_delim("./Antropo_data/AMBER/AMBER_all.csv", delim = ";") %>% 
   st_as_sf(coords = c("Longitude_WGS84", "Latitude_WGS84"), crs = st_crs(4326)) %>% 
-  st_filter(hess) %>% select(GUID, type) %>% st_transform(25832)
+  st_filter(hess) %>% select(GUID, type) %>% mutate(count = 1) %>% 
+  pivot_wider(names_from = "type", values_from = count, values_fill = NA) %>% st_transform(st_crs(stream_net))
 
 ## 4. OSM Highways ####
 
 # read osm data and filter for highways and railways
-transport_net <- oe_read("./OSM/hessen-latest.osm.pbf", extra_tags = "railway") %>% st_transform(25832) %>% 
-select(osm_id, highway, railway, geometry) %>% filter(highway == "motorway" | railway == "rail") %>% unite("type", highway, railway, na.rm = T)
+transport_net <- oe_read("./OSM/hessen-latest.osm.pbf", extra_tags = "railway") %>% 
+select(osm_id, highway, railway, geometry) %>% filter(highway == "motorway" | railway == "rail") %>% 
+  unite("type", highway, railway, na.rm = T) %>% st_transform(st_crs(stream_net))
 
 # extract highway and railway crossings with stream net
-crossings <- st_intersection(stream_net, transport_net) %>% select(osm_id, type, geom)
+crossings <- st_intersection(stream_net, transport_net) %>% select(osm_id, type, geom) %>% st_cast("POINT")
+mtw <- crossings %>% filter(type == "motorway")
+rail <- crossings %>% filter(type == "rail")
 
 ## 5. watershed delineation ####
 
@@ -169,11 +182,28 @@ str_net_rout <- st_set_precision(stream_net, 0.01)
 net_rout <- as_sfnetwork(str_net_rout) %>% convert(to_spatial_simple) %>% convert(to_spatial_smooth)
 
 # blend in Bio and stressor data as nodes
-net_rout_blend <- st_network_blend(net_rout, mzb) %>% st_network_blend(.,wwtp)
+net_rout_blend <- st_network_blend(net_rout, mzb) %>% st_network_blend(.,wwtp) %>% 
+  st_network_blend(.,storm) %>% st_network_blend(.,barriers) %>% st_network_blend(.,mtw) %>% 
+  st_network_blend(.,rail)
 
 #extract bio nodes for querying
 nodes <- st_as_sf(net_rout_blend, "nodes")
-data_allocated <- nodes %>% filter(!is.na(ID_SITE)) %>% 
+bio_data <- nodes %>% filter(!is.na(ID_SITE)) %>% 
   mutate(ID_NODE = row.names(nodes)[with(nodes, !is.na(ID_SITE))])
 
-system.time(data_allocated %>% slice(1:100) %>% rowwise() %>% mutate(upstream_summarize(net_rout_blend,ID_NODE,c("CON_HOUSE","TOT_WASTE"),"ID_WWTP",F)))
+data_all <- bio_data %>% slice(1211) %>% rowwise() %>% 
+  mutate(upstream_summarize(
+    net = net_rout_blend,
+    start = ID_NODE,
+    node_cols = c("CON_HOUSE", "TOT_WASTE", "other", "weir", "culvert", "ford", "dam", "ramp"),
+    IDs = c("ID_WWTP", "SWOF_ID", "GUID", "osm_id.x", "osm_id.y"),
+    area = ws_clc,
+    area_cols = c("Agriculture", "Urban", "semi-Natural", "Wetland"),
+    threshold = 30)
+    )
+
+# II. Modeling ####
+# 1. XGBoost ####
+
+
+# 2. GAMM ####

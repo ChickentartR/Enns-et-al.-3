@@ -5,6 +5,7 @@ date: "2024-10-17"
 output:
   github_document: default
 always_allow_html: true
+bibliography: references.bib
 ---
 
 ```{r setup, include = FALSE}
@@ -15,15 +16,16 @@ knitr::opts_chunk$set(warning = FALSE)
 
 Freshwater ecosystems exists in very heterogenous landscapes, including not only natural, but also anthropogenic "spatial features"[^1]. Can these features, like barriers, wastewater treatment plants, road & railroad crossings, etc. explain the ecological status of the freshwater fauna? In this study, we try to answer this question combining various spatial data sets and utilizing machine learning algorithms[^2].
 
-[^1]: [Carlisle et al. 2009](https://doi.org/10.1007/s10661-008-0256-z); [Marzin et al. 2013](https://doi.org/10.1007/s10750-012-1254-2); [Murphy & Davy-Bowker 2005](https://doi.org/10.1007/s10750-004-1451-8)
+[^1]: [@carlisle2008]; [@marzin2012]; [@murphy2005]
 
-[^2]: [Dedman et al. 2015](http://dx.doi.org/10.1016/j.ecolmodel.2015.05.010); [Elith et al. 2008](https://doi.org/10.1111/j.1365-2656.2008.01390.x); [Heß et al. 2023](http://dx.doi.org/10.1016/j.scitotenv.2023.162952); [Yu et al. 2020](https://doi.org/10.1016/j.ecolmodel.2020.109202)
+[^2]: [@dedman2015]; [@elith2008]; [@heß2023]; [@yu2020]
 
 # Methods
 
 ```{r load_libraries_data, include=FALSE}
 library(readxl)
 library(tidyverse)
+library(stars)
 library(sf)
 library(sfnetworks)
 library(SSN2)
@@ -36,16 +38,21 @@ library(osmextract)
 library(httr2)
 library(tmap)
 
-stream_net <- st_read("./Data/stream_net/Gewässerstrukturgüte_Hessen_rev.shp") %>% 
+stream_net <- st_read("./Data/stream_net/Gewässerstrukturgüte_Hessen.shp") %>% 
   select(geometry, GESAMT, HP3, GEWKZ, ABS) %>% st_cast("LINESTRING") %>% 
-  mutate(ABS = as.numeric(ABS)) 
+  mutate(ABS = as.numeric(ABS))
+
+mzb <- read_delim("./Data/EQC_MZB.csv", delim = ";") %>% 
+  mutate(EQC = factor(EQC)) %>% group_by(ID_SITE) %>% arrange(desc(YEAR)) %>% slice_head() %>% 
+  st_as_sf(coords = c("UTM_EAST", "UTM_NORTH"), crs = st_crs(25832))
+mzb <- cbind(mzb, stream_net[st_nearest_feature(mzb, stream_net),]) %>% select(-geometry.1)
 ```
 
 ## Combining Spatial Data
 
 For the spatial analysis all necessary shape and raster files are projected into EPSG . The HLNUG stream network is a collection of 100 m long line segments, each containing a stream ID and a segment ID. The stream ID is designed in such a way, that it represents the one from the subsequent stream in which the current flows into, followed by additional numbers. The segment number increases towards the source of a stream (Fig. 1). Each 100 m segment already contains information on the habitats structural quality (1 - pristine, 7 - completly altered).
 
-```{r create_figure,echo=FALSE , fig.cap = "Fig. 1: Example for stream- and segment ID. The segment number increases in the direction of the source. The stream ID of smaller confluence resembels always that of the bigger stream, in which it flows into, plus additional numbers."}
+```{r ID_example_figure,echo=FALSE , fig.cap = "Fig. 1: Example for stream- and segment ID. The segment number increases in the direction of the source. The stream ID of smaller confluence resembels always that of the bigger stream, in which it flows into, plus additional numbers."}
 
 
 str_net_plot <- stream_net %>% filter(str_starts(GEWKZ, "24848292")) %>% 
@@ -68,7 +75,7 @@ str_net_plot <- stream_net %>% filter(str_starts(GEWKZ, "24848292")) %>%
 str_net_plot
 ```
 
-The stream network can be dissolved in QGIS using the dissolve tool and subsequently we can build an initial landscape network (LSN) using the `lines_to_lsn()` function from the [SSNbler](https://cran.r-project.org/web/packages/SSNbler/index.html) package, where we set the snap tolerance of nodes to 3 m and the topology tolerance to 30 m (note that the digitized flow needs to lead from source to outlet points). The summary of the node error report reveals that the network is highly erroneous. (For more detail on the LSN parameters and error types see [Peterson & Pearse 2024](https://github.com/pet221/SSNbler/blob/main/inst/tutorials/Topology_Editing/QGIS/TopologyEditing_QGIS.pdf))
+The stream network can be dissolved in QGIS using the dissolve tool and subsequently an initial landscape network (LSN) can build using the `lines_to_lsn()` function from the `SSNbler` package, where the snap tolerance of nodes is set to 3 m and the topology tolerance to 30 m (note that the digitized flow needs to lead from source to outlet points). The summary of the node error report reveals that the network is highly erroneous. (For more detail on the LSN parameters and error types see [Peterson & Pearse 2024](https://github.com/pet221/SSNbler/blob/main/inst/tutorials/Topology_Editing/QGIS/TopologyEditing_QGIS.pdf))
 
 ```{r read_node_errors, include=FALSE}
 node_errors <- st_read("./Data/SSNbler/node_errors.gpkg") %>% modify_if(is.character, as.factor)
@@ -78,4 +85,44 @@ node_errors <- st_read("./Data/SSNbler/node_errors.gpkg") %>% modify_if(is.chara
 summary(node_errors)
 ```
 
-Fixing topological errors in the entire network, manually and using GRASS GIS tools, would take too much time.
+Fixing topological errors in the entire network, manually and using GRASS GIS tools, would take too much time, therefore using this network for routing operations is not feasible. To quantify the number of point features upstream of a respective bio sampling site, the existing stream and section ID system can be used . The assignment works as follows for each stressor type:
+
+1.  count all features on the entire stream and its confluences
+
+2.  subtract the number of features with equal or smaller segment number of the bio sampling site
+
+In order to delineate upstream watersheds for each bio sampling site a digital elevation model will be used to extract flow accumulation and pointer grids, from which the watershed is calculated. Using the SRTM GL1 30m DEM[^3] for Hessen has the drawback of creating inaccurate flow accumulation and pointer grids in areas with low profiles (namely the Rhine basin). To improve accuracy, the existing stream network is burned into the DEM following these steps in QGIS:
+
+[^3]: [@opentopography2013a]
+
+1.  Reproject raster network to stream CRS (EPSG: 25832)
+
+2.  dissolve the stream network
+
+3.  Run the Grass r.carve algorithm with a stream width of 60 m, depth of 3 m and with no flat areas in direction of stream flow allowed (Note: the algorithm does not work on latitude-longitude CRS, see [r.carve GRASS GIS manual](https://grass.osgeo.org/grass-stable/manuals/r.carve.html))
+
+The algorithm will take some time to run, approximately 1 hour and 18 minutes (Intel core i7, 16 GB RAM). Finally, watersheds can be extracted using the `whitebox` package, following the instructions from [Gannon, 2024](https://vt-hydroinformatics.github.io/Quarto_Book/15-Watershed-Delineation-and-Analysis.html).
+
+```{r stream_size_figure, echo=FALSE, fig.cap="Fig. 2: streams split by their size (stream ID digits)"}
+ggplot(stream_net)+
+  geom_sf(aes(col = factor(str_length(GEWKZ))))+
+  facet_wrap(vars(str_length(GEWKZ)), ncol = 5)+
+  theme_bw()+
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "none"
+  )
+```
+
+```{r plot_mzb_stream_count, echo=FALSE, fig.cap="Fig. 3: number of invertebrate sampling sites located on different stream sizes"}
+ggplot(mzb, aes(str_length(GEWKZ)))+
+  geom_bar()+
+  labs(
+    x = "stream size (stream ID digits)",
+    y = paste("count", "( total",nrow(mzb),")")
+    )+
+  scale_x_continuous(breaks = 1:9)+
+  scale_y_continuous(breaks = seq(0,600,50), minor_breaks = seq(25,775,25))+
+  theme_bw()
+```
