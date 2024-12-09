@@ -74,7 +74,7 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
   if (!is.null(area)) {
     area_poly <- st_filter(area, st_shift(tab_nodes, st_centroid(st_union(tab_nodes)), 0.001), .predicate = st_intersects) 
     
-    if(any(!st_is(area_poly, "POLYGON"))) {stop("there were non-polygon geometries created!")}
+    if(any(!st_is(area_poly, "POLYGON") | length(st_is(area_poly, "POLYGON")) == 0)) {stop("there were non-polygon geometries created!")}
     else {area_poly <- area_poly %>% st_union() %>% st_remove_holes() %>% st_buffer(dist = -threshold)}
     
     # sample area by filled area polygon and summarize
