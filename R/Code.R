@@ -1,8 +1,11 @@
 # Enns et al. 3
 # library and working directory ####
 
+# general
 library(readxl)
 library(tidyverse)
+
+# Saptial analysis
 library(geodata)
 library(stars)
 library(sf)
@@ -15,6 +18,13 @@ library(whitebox)
 library(osmextract)
 library(httr2)
 library(tmap)
+
+# modeling
+library(caret)
+library(mgcv)
+library(xgboost)
+library(pdp)
+library(doParallel)
 
 # install_whitebox()
 wbt_init()
@@ -55,8 +65,8 @@ summary(node_errors)
 ## Conclusions:
 # It would take a lot of time to fix all network issues. In theory, the network issues would be fixed by 
 # adjusting the parameters in the LSN building process and postprocessing using GIS. To allocate network-
-# and simple features information to the biological sampling sites I use the stream- and segment number 
-# system (see section X) instead of network routing algorithms. 
+# and simple features information to the biological sampling sites the precision of the stream network
+# is lowered and a network is build for routing (section 7. Data allocation). 
 
 ## 2. Bio sampling data ####
 
@@ -191,7 +201,7 @@ nodes <- st_as_sf(net_rout_blend, "nodes")
 bio_data <- nodes %>% filter(!is.na(ID_SITE)) %>% 
   mutate(ID_NODE = row.names(nodes)[with(nodes, !is.na(ID_SITE))])
 
-data_all <- bio_data %>% slice(1211) %>% rowwise() %>% 
+data_all <- bio_data %>% rowwise() %>% 
   mutate(upstream_summarize(
     net = net_rout_blend,
     start = ID_NODE,
@@ -203,7 +213,165 @@ data_all <- bio_data %>% slice(1211) %>% rowwise() %>%
     )
 
 # II. Modeling ####
-# 1. XGBoost ####
+
+## 1. Data preparation ####
+
+# data cleaning
+data4model <- data_all %>% cbind(st_coordinates(.$geom)) %>% as.data.frame() %>%
+  rename(cros_hw = num_osm_id.x, cros_rail = num_osm_id.y, semi_Natural = semi.Natural) %>% 
+  select(EQC_mean, 
+         GESAMT, 
+         TOT_WASTE,
+         other:ramp,
+         num_ID_WWTP:Y,
+         RIV_TYPE
+  ) %>% 
+  mutate(EQC_mean = replace(EQC_mean, EQC_mean == 1, 2),
+         across(c(EQC_mean,GESAMT,RIV_TYPE), as.factor), 
+         across(TOT_WASTE:Y, as.numeric),
+         Urban_prop = Urban / rowSums(.[15:18]),
+         Agriculture_prop = Agriculture / rowSums(.[15:18]),
+         semi_Natural_prop = semi_Natural / rowSums(.[15:18]))
+
+# create training and test datasets
+set.seed(1234)
+inTrain <- createDataPartition(
+  y = data4model$EQC_mean,
+  p = 0.8,
+  list = F
+)
+
+train <- data4model[inTrain,] 
+test <- data4model[-inTrain,] 
+
+# plot Class counts
+ggplot(train)+
+  geom_histogram(aes(x = EQC_mean), stat = "count")+
+  theme_bw()
+
+## 2. GAM ####
+
+# build initial model
+gam_model <- gam(as.numeric(EQC_mean) ~ s(TOT_WASTE, by = interaction(RIV_TYPE,GESAMT)) + s(other, by = interaction(RIV_TYPE,GESAMT)) + s(weir, by = interaction(RIV_TYPE,GESAMT)) +
+                   s(culvert, by = interaction(RIV_TYPE,GESAMT)) + s(ford, by = interaction(RIV_TYPE,GESAMT)) + s(dam, by = interaction(RIV_TYPE,GESAMT)) + s(ramp, by = interaction(RIV_TYPE,GESAMT)) + s(num_ID_WWTP, by = interaction(RIV_TYPE,GESAMT)) +
+                   s(num_SWOF_ID, by = interaction(RIV_TYPE,GESAMT)) + s(Agriculture_prop, by = interaction(RIV_TYPE,GESAMT)) + s(Urban_prop, by = interaction(RIV_TYPE,GESAMT)) + s(semi_Natural_prop, by = interaction(RIV_TYPE,GESAMT)) +
+                   s(cros_hw, by = interaction(RIV_TYPE,GESAMT)) + s(cros_rail, by = interaction(RIV_TYPE,GESAMT)) + s(X,Y, by = interaction(RIV_TYPE,GESAMT))+s(Agriculture_prop, Urban_prop, semi_Natural_prop, by = interaction(RIV_TYPE,GESAMT)) + RIV_TYPE * GESAMT,
+                 select = T,
+                 data = train,
+                 family = ocat(R = 4)
+                 )
+
+# check model
+gam.check(gam_model)
+
+# summary and plot
+summary(gam_model)
+plot.gam(gam_model, trans = plogis, scheme = 2)
+
+# check concurvity
+concurvity(gam_model, full = T)
 
 
-# 2. GAMM ####
+
+## 3. XGBoost ####
+
+# extract target
+target <- as.numeric(train$EQC_mean)-1
+
+# one-hot encode rivtype
+train <- train %>% mutate(rv_count = 1) %>% 
+pivot_wider(names_from = RIV_TYPE, values_from = rv_count, values_fill = 0, names_prefix = "RT_")
+
+# extract data & remove redundant info
+train_ini <- train %>% 
+  select(-EQC_mean,
+         -Wetland) %>% 
+  sapply(as.numeric)
+
+# create xgb data matrix
+dtrain <- xgb.DMatrix(data = train_ini, label = target)
+
+# set model parameters
+xgb_params <- list(
+  "objective" = "multi:softprob",
+  "eval_metric" = "mlogloss",
+  "num_class" = 4
+)
+
+# build initial model
+xgb_model <- xgb.cv(
+  data = dtrain,
+  params = xgb_params,
+  nrounds = 250,
+  nfold = 10,
+  prediction = T
+  )
+
+# predictions & classification error
+OOF_prediction <- data.frame(xgb_model$pred) %>%
+  mutate(max_prob = max.col(., ties.method = "last"),
+         label = target + 1)
+head(OOF_prediction)
+
+# confusion matrix
+confusionMatrix(factor(OOF_prediction$max_prob),
+                factor(OOF_prediction$label),
+                mode = "everything")
+
+# train model
+train_model <- xgb.train(
+  params = xgb_params,
+  data = dtrain,
+  nrounds = 250
+)
+
+# feature importance
+xgb.importance(feature_names = colnames(train_ini), model = train_model) %>% 
+xgb.ggplot.importance()
+
+# Hyper-parameter tuning
+xgbFit_4cl <- train %>% as.data.frame() %>% mutate(EQC_mean = factor(EQC_mean, levels = c("good", "moderate", "bad", "very_bad"))) %>% 
+  caret::train(
+    form = EQC_mean ~ .,
+    data = .,
+    method = "xgbTree",
+    tuneLength = 10,
+    trControl = trainControl(
+      method = "cv", 
+      number = 10,
+      classProbs = T,
+      summaryFunction = mnLogLoss
+    ),
+    objective = "multi:softprob",
+    num_class = 4
+  )
+
+plot(varImp(xgbFit_4cl))
+partial(xgbFit_4cl, pred.var = "X", train = train, prob = T, which.class = "good") %>% autoplot(smooth = T)
+
+# feature importance
+xgb.importance(feature_names = colnames(train_fin), model = final_model) %>% 
+  xgb.ggplot.importance()
+
+# Partial dependence plots
+partial(final_model, pred.var = "semi_Natural_prop", train = train_fin, prob = T, which.class = 1) %>% autoplot(smooth = T)
+
+# model performance with test data
+
+## 4. Model comparisons ####
+
+# wrangle test data
+target_test <- as.numeric(test$EQC_mean)-1
+dtest <- test %>% select(-EQC_mean) %>% as.numeric() %>% xgb.DMatrix(data = ., label = target_test)
+
+# Confusion matrix
+# GAM
+gampred <- predict.gam(gam_model, test, type = "response") %>% as.data.frame() %>% 
+  rowwise() %>% mutate(pred = colnames(.)[which.max(c_across(1:4))] %>% parse_number())
+gampred$pred <- (gampred$pred + 1) %>% as_factor()
+confusionMatrix(gampred$pred, test$EQC_mean)
+
+# xgboost
+confusionMatrix(
+  predict(xgbFit_4cl, ),
+)
