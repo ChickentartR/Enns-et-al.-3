@@ -178,9 +178,8 @@ network `sf` object needs to be lowered (for more information see
 Details on `st_set_precision()` and `st_as_binary()` help page). To what
 precision to round depends, in general, on the maximum distance of
 dangling nodes and if the network can be build by connecting nodes with
-edges, or just by connecting nodes. The precision will be set to 0.01
-which rounds to the nearest 2 places before the decimal, corresponding
-to 100 meters (be aware of the object CRS units!).
+edges, or just by connecting nodes. The precision will be set to 70
+meters (be aware of the object CRS units!).
 
 In the resulting network, the right streams are connected (Fig. 3) and
 it can be used for routing operations. Performance of routing can be
@@ -189,11 +188,11 @@ greatly increased by simplifying the network and removing pseudo-nodes
 [here](https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html)).
 
 ``` r
-# Lower precision to 100 meters
-str_net_100m <- st_set_precision(stream_net, 0.01)
+# Lower precision to 50 meters
+str_net_50m <- st_set_precision(stream_net, set_units(70, "m"))
 
 # Create sf_network object, simplify and smooth pseudo-nodes
-network <- as_sfnetwork(str_net_100m) %>% convert(to_spatial_simple) %>% 
+network <- as_sfnetwork(str_net_50m) %>% convert(to_spatial_simple) %>% 
   convert(to_spatial_smooth)
 ```
 
@@ -223,9 +222,12 @@ and shifts a set of point geometries a proportional distance towards
 another specified point. The `upstream_summarize()` function builds a
 sub-network from a given point to all its vertices (stream sources) and
 extracts the node data, from which it counts the number of specified
-nodes and sums up specified attribute values. Further, if provided, it
-can sum up attribute values of polygons the following way: First, the
-set of nodes present in the sub-network are shifted towards their
+nodes and sums up specified attribute values. Further, it can calculate
+the minimal network distance between the start point and a set of nodes
+specified by their IDs with the `IDs` argument. If no such nodes are
+present in the sub-network, `inf` values are returned. The function can
+sum up attribute values of provided polygons the following way: First,
+the set of nodes present in the sub-network are shifted towards their
 centroid by 0.1% of their length, to avoid including adjacent polygons.
 Then, it creates a filtering mask by selecting all polygons which are
 touched by the shifted nodes and fills in ‘holes’ in the set of
@@ -244,6 +246,8 @@ arguments:
 - `area` : `sf` object with only polygon geometries
 - `area_cols` : names of attribute columns to summarize, present in
   `area`
+- `dist` : logical, should minimal distances between start and nodes,
+  specified by `IDs`, be calculated?
 - `threshold` : Value (in polygon CRS units) by which the polygon mask
   should be shrunken.
 
@@ -272,6 +276,7 @@ mzb_data_complete <- mzb_nodes %>% rowwise() %>%
     IDs = c("ID_WWTP", "ID_DAMS"),
     area = ws_clc,
     area_cols = c("Agriculture", "Urban", "semi-Natural"),
+    dist = T,
     threshold = 30)
     )
 ```
