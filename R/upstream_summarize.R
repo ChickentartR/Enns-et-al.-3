@@ -26,13 +26,13 @@
 #             not covered by upstream reach. Pay attention to CRS units!
 
 # Code ####
-upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_cols = NULL, threshold) {
+upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_cols = NULL, dist = F, threshold = NULL) {
   
   # disable traceback
   options(error = NULL)
   
   # Check for valid class of net input
-  if (class(net)[1] != "sfnetwork") {
+  if (!is.sfnetwork(net)) {
     stop("net must be an sfnetwork object!", call. = F)  # check for valid network input
   }
   
@@ -42,6 +42,16 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
       stop("net and area are not in the same CRS!", call. = F)}# Check for same net and area CRS
     if (class(area)[1] != "sf" | any(st_geometry_type(area) != "POLYGON")) {
       stop("area must be an sf object which contains only polygon geometries!", call. = F)}  # check for valid network input
+  }
+  
+  # Check for valid dist input
+  if(!is.logical(dist)) {
+    stop("dist must be logical!", call. = F)
+  }
+  
+  # Check for valid threshold input
+  if(!is.null(threshold)) {
+    if(!is.numeric(threshold)) {stop("threshold must be a numeric value!", call. = F)}
   }
   
   # Check presence of columns in data
@@ -69,6 +79,21 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
   tab_sum <- tab_nodes %>% as.data.frame() %>% 
     summarise(across(.cols = all_of(node_cols), ~sum(.x, na.rm = T)),
               across(.cols = all_of(IDs), ~sum(!is.na(.x)), .names = "num_{.col}"))
+  
+  # Calculate distances
+  if(dist == T) {
+    suppressWarnings(
+      tab_dist <- tab_nodes %>% as.data.frame() %>%
+        mutate(across(.cols = all_of(IDs), ~ min(st_network_cost(
+        net,
+        from = start,
+        to = filter(tab_nodes, !is.na(.x)),
+        direction = "in")),
+        .names = "dist_{.col}"
+      )) %>% select(starts_with("dist_")) %>% distinct()
+    )
+    tab_sum <- bind_cols(tab_sum, tab_dist) 
+  }
   
   # select watersheds
   if (!is.null(area)) {
