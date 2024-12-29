@@ -4,6 +4,8 @@
 # general
 library(readxl)
 library(tidyverse)
+library(dtplyr)
+library(data.table)
 
 # Saptial analysis
 library(geodata)
@@ -12,12 +14,11 @@ library(sf)
 library(nngeo)
 library(sfnetworks)
 library(tidygraph)
-library(SSN2)
-library(SSNbler)
 library(whitebox)
 library(osmextract)
 library(httr2)
 library(tmap)
+library(units)
 
 # modeling
 library(caret)
@@ -44,29 +45,6 @@ stream_net <- st_read("./stream_net/stream_net_rev.gpkg") %>%
 
 # load outline of Hesse
 hess <- gadm("Deu", level = 1, tempfile()) %>% subset(.$NAME_1 == "Hessen") %>% st_as_sf()
-
-# SSNbler Workflow
-# build initial LSN
-lines_to_lsn(
-  stream_net,
-  "./SSNbler",
-  check_topology = T,
-  snap_tolerance = 3, 
-  topo_tolerance = 30,
-  overwrite = T
-)
-
-# indentify topological errors & restrictions
-
-node_errors <- st_read("./node_errors.gpkg") %>% modify_if(is.character, as.factor)
-
-summary(node_errors)
-
-## Conclusions:
-# It would take a lot of time to fix all network issues. In theory, the network issues would be fixed by 
-# adjusting the parameters in the LSN building process and postprocessing using GIS. To allocate network-
-# and simple features information to the biological sampling sites the precision of the stream network
-# is lowered and a network is build for routing (section 7. Data allocation). 
 
 ## 2. Bio sampling data ####
 
@@ -186,7 +164,7 @@ ws_clc <- left_join(ws, clc_tab, by = "watersheds.tif")
 ## 7. Data allocation ####
 
 # round coordinates of stream network
-str_net_rout <- st_set_precision(stream_net, 0.01)
+str_net_rout <- st_set_precision(stream_net, set_units(70, "m"))
 
 # create sfnetwork object
 net_rout <- as_sfnetwork(str_net_rout) %>% convert(to_spatial_simple) %>% convert(to_spatial_smooth)
@@ -196,12 +174,21 @@ net_rout_blend <- st_network_blend(net_rout, mzb) %>% st_network_blend(.,wwtp) %
   st_network_blend(.,storm) %>% st_network_blend(.,barriers) %>% st_network_blend(.,mtw) %>% 
   st_network_blend(.,rail)
 
-#extract bio nodes for querying
+# extract bio nodes for querying
 nodes <- st_as_sf(net_rout_blend, "nodes")
 bio_data <- nodes %>% filter(!is.na(ID_SITE)) %>% 
   mutate(ID_NODE = row.names(nodes)[with(nodes, !is.na(ID_SITE))])
 
-data_all <- bio_data %>% rowwise() %>% 
+# set up cluster
+num_cores <- (detectCores()-1)
+num_cores %>% makeCluster() %>% registerDoParallel()
+
+# split data into chunks
+bio_data_chunks <- bio_data %>% split(., ceiling(seq_along(row_number(.)) / (length(row_number(.)) %/% num_cores)))
+
+# run function parallel over data chunks
+data_all <- foreach(chunk = bio_data_chunks, .combine = rbind, .packages = c("dplyr", "dtplyr","sf","sfnetworks","tidygraph","nngeo")) %dopar% {
+  chunk %>% rowwise() %>% 
   mutate(upstream_summarize(
     net = net_rout_blend,
     start = ID_NODE,
@@ -209,11 +196,12 @@ data_all <- bio_data %>% rowwise() %>%
     IDs = c("ID_WWTP", "SWOF_ID", "GUID", "osm_id.x", "osm_id.y"),
     area = ws_clc,
     area_cols = c("Agriculture", "Urban", "semi-Natural", "Wetland"),
+    dist = "all",
     threshold = 30)
     )
-
+}
+  
 # II. Modeling ####
-
 ## 1. Data preparation ####
 
 # data cleaning
