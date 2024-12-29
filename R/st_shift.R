@@ -30,7 +30,7 @@ st_shift <- function(x, y, factor){
   
   # extract coordinates and shift
   sh_pts <- st_coordinates(x) + factor * (matrix(rep(st_coordinates(y), nrow(x)), ncol = 2, byrow = TRUE)-st_coordinates(x)) %>% 
-  as.data.frame()
+  as_tible()
 
 # convert to sf object
 shifted <- st_as_sf(sh_pts, coords = c("X", "Y"), crs = st_crs(x))
