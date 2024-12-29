@@ -17,9 +17,35 @@ learning algorithms (Dedman et al. 2015; Elith, Leathwick, and Hastie
 
 # Methods
 
-## 1. Combining Spatial Data
+## 1. Library
 
-### 1.1 Point features
+The following packages are needed for the analysis:
+
+``` r
+# general
+library(readxl)
+library(tidyverse)
+library(doParallel)
+
+# spatial analysis
+library(stars)
+library(sf)
+library(sfnetworks)
+library(tidygraph)
+library(geodata)
+library(whitebox)
+library(osmextract)
+
+# modeling
+library(caret)
+library(mgcv)
+library(xgboost)
+library(pdp)
+```
+
+## 2. Combining Spatial Data
+
+### 2.1 Point features
 
 For the spatial analysis all necessary shape and raster files are
 projected into EPSG 25832.
@@ -42,7 +68,7 @@ crossings <- st_intersection(stream_net, transport_net) %>%
   st_cast("POINT")
 ```
 
-### 1.2 Watershed delineation
+### 2.2 Watershed delineation
 
 In order to delineate upstream watersheds for each bio sampling site the
 SRTM GL1 30m (OpenTopography 2013) digital elevation model will be used
@@ -148,7 +174,7 @@ landcover_sum <- landcover_ws %>% group_by(watersheds.tif, type) %>%
 watersheds_lc <- left_join(ws_poly, landcover_sum, by = "watersheds.tif")
 ```
 
-### 1.3 Network building
+### 2.3 Network building
 
 The Hessian stream network is a collection of 100 m long line segments,
 each containing a stream ID and a segment ID. The stream ID is designed
@@ -213,7 +239,7 @@ network_blend <- st_network_blend(network, mzb) %>% st_network_blend(.,wwtp) %>%
   st_network_blend(.,dams)
 ```
 
-## 2. Spatial Data quantification
+## 3. Spatial Data quantification
 
 For the quantification of point- and polygon features and their
 attributes I wrote two custom functions, `st_shift()` and
@@ -223,19 +249,19 @@ another specified point. The `upstream_summarize()` function builds a
 sub-network from a given point to all its vertices (stream sources) and
 extracts the node data, from which it counts the number of specified
 nodes and sums up specified attribute values. Further, it can calculate
-the minimal network distance between the start point and a set of nodes
-specified by their IDs with the `IDs` argument. If no such nodes are
-present in the sub-network, `inf` values are returned. The function can
-sum up attribute values of provided polygons the following way: First,
-the set of nodes present in the sub-network are shifted towards their
-centroid by 0.1% of their length, to avoid including adjacent polygons.
-Then, it creates a filtering mask by selecting all polygons which are
-touched by the shifted nodes and fills in ‘holes’ in the set of
-polygons. By setting a threshold, the mask can be shrunken to avoid
-selecting adjacent polygons. This mask is finally used to select all
-polygons present in the sub-network, from which their specified
-attributes are summarized. The function contains the following set of
-arguments:
+the minimal, maximal, or average network distance between the start
+point and a set of nodes specified by their IDs with the `IDs` argument.
+If no such nodes are present in the sub-network, `inf` or `NaN` values
+are returned. The function can sum up attribute values of provided
+polygons the following way: First, the set of nodes present in the
+sub-network are shifted towards their centroid by 0.1% of their length,
+to avoid including adjacent polygons. Then, it creates a filtering mask
+by selecting all polygons which are touched by the shifted nodes and
+fills in ‘holes’ in the set of polygons. By setting a threshold, the
+mask can be shrunken to avoid selecting adjacent polygons. This mask is
+finally used to select all polygons present in the sub-network, from
+which their specified attributes are summarized. The function contains
+the following set of arguments:
 
 - `net` : The complete network with blended in points of interest
 - `start` : Row name of node from which to rout upstream
@@ -246,8 +272,8 @@ arguments:
 - `area` : `sf` object with only polygon geometries
 - `area_cols` : names of attribute columns to summarize, present in
   `area`
-- `dist` : logical, should minimal distances between start and nodes,
-  specified by `IDs`, be calculated?
+- `dist` : Either `'min'`, `'max'`, `'mean'`, or `'all'`. Calculates
+  distances between start and nodes, specified by `IDs`.
 - `threshold` : Value (in polygon CRS units) by which the polygon mask
   should be shrunken.
 
@@ -264,11 +290,20 @@ mzb_nodes <- st_as_sf(network_blend, "nodes") %>% filter(!is.na(ID_SITE)) %>%
 `upstream_summarize()` can be used in combination with rowwise() and
 mutate() to perform the action over multiple points. Depending on the
 number of nodes within the entire network, this task can take quite a
-lot of time.
+lot of time, therefore it is best to parallelize and save some time.
 
 ``` r
-# Apply upstream_summarize row-wise over all sampling site nodes 
-mzb_data_complete <- mzb_nodes %>% rowwise() %>% 
+# set up cluster
+num_cores <- (detectCores()-1)
+num_cores %>% makeCluster() %>% registerDoParallel()
+
+# split data into chunks
+data_chunks <- mzb_nodes %>% 
+  split(., ceiling(seq_along(row_number(.)) / (length(row_number(.)) %/% num_cores)))
+
+# Apply upstream_summarize parallel and row-wise over all sampling site nodes 
+mzb_data_complete <- foreach(chunk = data_chunks, .combine = rbind, .packages = c("dplyr", "dtplyr","sf","sfnetworks","tidygraph","nngeo")) %dopar% {
+  chunk %>% rowwise() %>% 
   mutate(upstream_summarize(
     net = network_blend,
     start = ID_NODE,
@@ -279,11 +314,12 @@ mzb_data_complete <- mzb_nodes %>% rowwise() %>%
     dist = T,
     threshold = 30)
     )
+}
 ```
 
-## 3. Modeling
+## 4. Modeling
 
-## 4. Data availability
+## 5. Data availability
 
 Data on WFD invertebrate sampling and the Hessian stream network were
 kindly provided by the Hessian state office for nature, environment and
