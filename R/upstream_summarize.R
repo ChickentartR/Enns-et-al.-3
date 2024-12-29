@@ -26,7 +26,7 @@
 #             not covered by upstream reach. Pay attention to CRS units!
 
 # Code ####
-upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_cols = NULL, dist = F, threshold = NULL) {
+upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_cols = NULL, dist = NULL, threshold = NULL) {
   
   # disable traceback
   options(error = NULL)
@@ -45,8 +45,10 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
   }
   
   # Check for valid dist input
-  if(!is.logical(dist)) {
-    stop("dist must be logical!", call. = F)
+  if(!is.null(dist)) {
+    if(!(dist %in% c("min", "max", "mean", "all"))) {
+      stop("dist must be 'min', 'max', 'mean', or 'all'!", call. = F)
+      }
   }
   
   # Check for valid threshold input
@@ -76,23 +78,52 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
   tab_nodes <-  st_as_sf(net, "nodes")[nodes_us,]
 
   # Calculate the sum of each column in 'cols'
-  tab_sum <- tab_nodes %>% as.data.frame() %>% 
+  tab_sum <- tab_nodes %>% lazy_dt() %>% 
     summarise(across(.cols = all_of(node_cols), ~sum(.x, na.rm = T)),
-              across(.cols = all_of(IDs), ~sum(!is.na(.x)), .names = "num_{.col}"))
+              across(.cols = all_of(IDs), ~sum(!is.na(.x)), .names = "num_{.col}")) %>% 
+    as_tibble()
   
-  # Calculate distances
-  if(dist == T) {
+  # Get OD cost matrix
+  if(!is.null(dist)) {
     suppressWarnings(
-      tab_dist <- tab_nodes %>% as.data.frame() %>%
-        mutate(across(.cols = all_of(IDs), ~ min(st_network_cost(
+      tab_dist <- tab_nodes %>% as_tibble() %>% 
+        mutate(across(.cols = all_of(IDs), ~ st_network_cost(
         net,
         from = start,
         to = filter(tab_nodes, !is.na(.x)),
-        direction = "in")),
+        direction = "in"),
         .names = "dist_{.col}"
       )) %>% select(starts_with("dist_")) %>% distinct()
-    )
-    tab_sum <- bind_cols(tab_sum, tab_dist) 
+    ) 
+    
+    # Calculate distances
+    if (dist == "min") {
+      suppressWarnings(
+        tab_dist <- tab_dist %>%  
+          summarize(across(.cols = everything(), list(min = ~ min(.x[!is.infinite(.x)]))))
+      )
+    } else if (dist == "max") {
+      suppressWarnings(
+      tab_dist <- tab_dist %>%  
+        summarize(across(.cols = everything(), list(max = ~ max(.x[!is.infinite(.x)]))))
+      )
+    } else if (dist == "mean") {
+      suppressWarnings(
+      tab_dist <- tab_dist %>%  
+        summarize(across(.cols = everything(), list(mean = ~ mean(.x[!is.infinite(.x)]))))
+      )
+    } else if (dist == "all") {
+      suppressWarnings(
+      tab_dist <- tab_dist %>%  
+        summarize(across(.cols = everything(), 
+                         list(min = ~ min(.x[!is.infinite(.x)]), 
+                              max = ~ max(.x[!is.infinite(.x)]), 
+                              mean = ~ mean(.x[!is.infinite(.x)]))
+      )) 
+      )
+    }
+
+    tab_sum <- bind_cols(tab_sum, as_tibble(tab_dist)) 
   }
   
   # select watersheds
@@ -104,7 +135,8 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
     
     # sample area by filled area polygon and summarize
     area_sum <- st_filter(area, area_poly, .predicate = st_intersects) %>% 
-      as.data.frame() %>% summarise(across(.cols = all_of(area_cols), ~sum(.x, na.rm = T)))
+      lazy_dt() %>% summarise(across(.cols = all_of(area_cols), ~sum(.x, na.rm = T))) %>% 
+      as_tibble()
     
     tab_sum <- bind_cols(tab_sum, area_sum)
   }
