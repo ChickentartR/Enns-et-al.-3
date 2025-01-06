@@ -51,7 +51,7 @@ ws <- read_stars("./DEM/watersheds.tif") %>% st_as_sf(as_points = F, merge = T)
 
 The following packages are needed for the analysis:
 
-``` R
+``` r
 # general
 library(readxl)
 library(tidyverse)
@@ -62,6 +62,7 @@ library(stars)
 library(sf)
 library(sfnetworks)
 library(tidygraph)
+library(nngeo)
 library(geodata)
 library(whitebox)
 library(osmextract)
@@ -305,7 +306,7 @@ mzb_nodes <- st_as_sf(network_blend, "nodes") %>% filter(!is.na(ID_SITE)) %>%
   mutate(ID_NODE = row.names(nodes)[with(nodes, !is.na(ID_SITE))])
 ```
 
-`upstream_summarize()` can be used in combination with rowwise() and mutate() to perform the action over multiple points. Depending on the number of nodes within the entire network, this task can take quite a lot of time, therefore it is best to parallelize and save some time.
+`upstream_summarize()` can be used in combination with rowwise() and mutate() to perform the action over multiple points. Depending on the number of nodes within the entire network, this task can take quite a lot of time. Luckily this task can be parallelized to save a lot of time.
 
 ``` r
 # set up cluster
@@ -333,6 +334,12 @@ mzb_data_complete <- foreach(chunk = data_chunks, .combine = rbind, .packages = 
 ```
 
 ## 4. Modeling
+
+### 4.1 Data cleaning & feature engeneering
+
+### 4.2 Generalized additive mixed model
+
+### 4.3 Ensemble machine learning with xgboost
 
 ## 5. Data availability
 
