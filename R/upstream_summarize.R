@@ -26,7 +26,7 @@
 #             not covered by upstream reach. Pay attention to CRS units!
 
 # Code ####
-upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_cols = NULL, dist = NULL, threshold = NULL) {
+upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_cols = NULL, dist = NULL, threshold = NULL, Shreve = NULL) {
   
   # disable traceback
   options(error = NULL)
@@ -56,6 +56,11 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
     if(!is.numeric(threshold)) {stop("threshold must be a numeric value!", call. = F)}
   }
   
+  # Check for valid Shreve input
+  if(!is.null(Shreve)) {
+    if(!is.logical(Shreve)) {stop("Shreve must be logical!", call. = F)}
+  }
+  
   # Check presence of columns in data
   if (any(!(node_cols %in% colnames(st_as_sf(net,"nodes"))))) {
     stop("Column name not found in net!")
@@ -75,22 +80,30 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
     unlist(.$vpath) %>%
     unique()
     
-  tab_nodes <-  st_as_sf(net, "nodes")[nodes_us,]
+  tab_nodes <- st_as_sf(net, "nodes") %>% mutate(igraph_ID = seq.int(nrow(.)))
+  sub_nodes <- tab_nodes[nodes_us,]
 
   # Calculate the sum of each column in 'cols'
-  tab_sum <- tab_nodes %>% lazy_dt() %>% 
+  tab_sum <- sub_nodes %>% lazy_dt() %>% 
     summarise(across(.cols = all_of(node_cols), ~sum(.x, na.rm = T)),
               across(.cols = all_of(IDs), ~sum(!is.na(.x)), .names = "num_{.col}")) %>% 
     as_tibble()
   
+  # calculate shreve
+  if(isTRUE(Shreve)){
+    tab_sum <- tab_sum %>% mutate(
+      Shreve = st_as_sf(net_rout_blend, "edges") %>% filter(from %in% sub_nodes$igraph_ID & !(from %in% to)) %>% nrow()
+    )
+  }
+  
   # Get OD cost matrix
   if(!is.null(dist)) {
     suppressWarnings(
-      tab_dist <- tab_nodes %>% as_tibble() %>% 
+      tab_dist <- sub_nodes %>% as_tibble() %>% 
         mutate(across(.cols = all_of(IDs), ~ st_network_cost(
         net,
         from = start,
-        to = filter(tab_nodes, !is.na(.x)),
+        to = filter(sub_nodes, !is.na(.x)),
         direction = "in"),
         .names = "dist_{.col}"
       )) %>% select(starts_with("dist_")) %>% distinct()
@@ -128,7 +141,7 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
   
   # select watersheds
   if (!is.null(area)) {
-    area_poly <- st_filter(area, st_shift(tab_nodes, st_centroid(st_union(tab_nodes)), 0.001), .predicate = st_intersects) 
+    area_poly <- st_filter(area, st_shift(sub_nodes, st_centroid(st_union(sub_nodes)), 0.001), .predicate = st_intersects) 
     
     if(any(!st_is(area_poly, "POLYGON") | length(st_is(area_poly, "POLYGON")) == 0)) {stop("there were non-polygon geometries created!")}
     else {area_poly <- area_poly %>% st_union() %>% st_remove_holes() %>% st_buffer(dist = -threshold)}
