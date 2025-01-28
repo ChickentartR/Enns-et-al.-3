@@ -1,5 +1,5 @@
 # Enns et al. 3
-# library and working directory ####
+# I. library and working directory ####
 
 # general
 library(readxl)
@@ -11,6 +11,7 @@ library(data.table)
 library(geodata)
 library(stars)
 library(sf)
+library(spdep)
 library(nngeo)
 library(sfnetworks)
 library(tidygraph)
@@ -22,10 +23,12 @@ library(units)
 
 # modeling
 library(caret)
-library(mgcv)
+library(mlr)
 library(xgboost)
 library(pdp)
 library(doParallel)
+library(parallelMap)
+library(GWmodel)
 
 # install_whitebox()
 wbt_init()
@@ -35,7 +38,7 @@ setwd("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/Data")
 source("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/R/upstream_summarize.R")
 source("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/R/st_shift.R")
 
-# I. Data generation ####
+# II. Data generation ####
 ## 1 Stream network from HLNUG ####
 
 # load stream network data
@@ -48,11 +51,11 @@ hess <- gadm("Deu", level = 1, tempfile()) %>% subset(.$NAME_1 == "Hessen") %>% 
 
 ## 2. Bio sampling data ####
 
-# select most recent sampling for macrobenthos ...
+# read in macrobenthos sampling
 mzb <- read_delim("./Bio_data/EQC_MZB.csv", delim = ";") 
 
 # get average EQC & Taxa richness
-mzb_avg <- mzb %>% group_by(ID_SITE) %>% summarize(EQC_mean = round(mean(EQC)), Taxa_mean = mean(NUM_TAXA))
+mzb_avg <- mzb %>% group_by(ID_SITE) %>% summarize(EQC_mean = round(mean(EQC)), Taxa_mean = mean(NUM_TAXA), MMI_mean = mean(MMI))
 
 # join with averages
 mzb <- left_join(mzb, mzb_avg, "ID_SITE")
@@ -201,27 +204,140 @@ data_all <- foreach(chunk = bio_data_chunks, .combine = rbind, .packages = c("dp
     )
 }
   
-# II. Modeling ####
-## 1. Data preparation ####
+# III. Modeling ####
+## 1. Data cleaning ####
 
-# data cleaning
+# renaming
 data4model <- data_all %>% cbind(st_coordinates(.$geom)) %>% as.data.frame() %>%
-  rename(cros_hw = num_osm_id.x, cros_rail = num_osm_id.y, semi_Natural = semi.Natural) %>% 
+  rename(cros_hw = num_osm_id.x, 
+         cros_rail = num_osm_id.y,
+         dist_cros_hw_min = dist_osm_id.x_min,
+         dist_cros_rail_min = dist_osm_id.y_min,
+         semi_Natural = semi.Natural)
+
+# remove units from values
+data4model <- data4model %>% 
+  mutate(across(.cols = c("dist_ID_WWTP_min", "dist_SWOF_ID_min", "dist_GUID_min", "dist_cros_hw_min", "dist_cros_rail_min", "Agriculture":"Wetland"),
+                .fns = ~ as.vector(.x)))
+
+# change values in distance
+data4model <- data4model %>% 
+  mutate(across(.cols = c("dist_ID_WWTP_min", "dist_SWOF_ID_min", "dist_GUID_min", "dist_cros_hw_min", "dist_cros_rail_min"),
+                .fns = ~case_when(
+                  .x == 0 ~ 5,
+                  .x == Inf | .x == -Inf | is.na(.x) ~ 0,
+                  TRUE ~ .x
+                )))
+
+# transform distances by 1/dist
+data4model <- data4model %>% mutate(
+  across(.cols= c("dist_ID_WWTP_min", "dist_SWOF_ID_min", "dist_GUID_min", "dist_cros_hw_min", "dist_cros_rail_min"),
+         .fns = ~case_when(
+           .x != 0 ~ .x / max(.x),
+           .x == 0 ~ .x
+         )
+  )
+)
+
+# select variables and change classes
+data4model <- data4model %>% 
   select(EQC_mean, 
          GESAMT, 
          TOT_WASTE,
          other:ramp,
-         num_ID_WWTP:Y,
-         RIV_TYPE
-  ) %>% 
+         num_ID_WWTP:cros_rail,
+         RIV_TYPE,
+         MMI_mean:Y,
+         Agriculture:Wetland,
+         matches("_min$")
+         )
+
+## 2. EDA ####
+
+# summary
+summarizeColumns(data4model)
+
+# correlation among variables
+varicor <- data4model %>% select(where(is.numeric)) %>% cor(.) %>% round(.,2) %>% as.data.frame()
+
+
+## 3. Spatial autocorrelation ####
+
+# k-nearest neighbours
+suppressPackageStartupMessages(require(deldir))
+data_nb_knn <- knn2nb(knearneigh(data_all,k = 1))
+
+# distance neighbours
+dsts <- unlist(nbdists(data_nb_knn, data_all))
+summary(dsts)
+max_1nn <- max(dsts)
+
+data_nb_dst <- dnearneigh(data_all, d1 = 0, d2 = 0.75*max_1nn)
+
+data_lw <- nb2listw(data_nb_dst, style = "W", zero.policy = T)
+
+# Moran statistics
+moran.test(data_all$MMI_mean, data_lw, alternative = "greater")
+moran.plot(data_all$MMI_mean, data_lw)
+
+## 4. Feature engeneering ####
+
+data4model <- data4model %>% 
   mutate(EQC_mean = replace(EQC_mean, EQC_mean == 1, 2),
          across(c(EQC_mean,GESAMT,RIV_TYPE), as.factor), 
-         across(TOT_WASTE:Y, as.numeric),
-         Urban_prop = Urban / rowSums(.[15:18]),
-         Agriculture_prop = Agriculture / rowSums(.[15:18]),
-         semi_Natural_prop = semi_Natural / rowSums(.[15:18]))
+         Urban_prop = Urban / rowSums(.[19:22]),
+         Agriculture_prop = Agriculture / rowSums(.[19:22]),
+         semi_Natural_prop = semi_Natural / rowSums(.[19:22]))
 
-# create training and test datasets
+# standardize variables
+data4model_std <- normalizeFeatures(data4model, target = c("MMI_mean", "EQC_mean"))
+
+# PCA  
+PC_pnt <- data4model_std %>% select(TOT_WASTE:cros_rail) %>% princomp(scores = T)
+PC_dst <- data4model_std %>% select(matches("_min")) %>% princomp(scores = T)
+PC_lcc <- data4model_std %>% select(Agriculture:semi_Natural) %>% princomp(scores = T)
+
+summary(PC_pnt)
+summary(PC_dst)
+summary(PC_lcc)
+
+PC_loadings <- bind_rows(
+  PC_pnt$loadings[,1:2] %>% as.data.frame() %>% mutate(var = rownames(.), PCA = "points") %>% pivot_longer(cols = Comp.1:Comp.2, names_to = "component", values_to = "scores"),
+  PC_dst$loadings[,1:4] %>% as.data.frame() %>% mutate(var = rownames(.), PCA = "distances") %>% pivot_longer(cols = Comp.1:Comp.4, names_to = "component", values_to = "scores"),
+  PC_lcc$loadings[,1:2] %>% as.data.frame() %>% select(-Comp.2) %>% mutate(var = rownames(.), PCA = "land_use") %>% pivot_longer(cols = Comp.1, names_to = "component", values_to = "scores")
+  )
+
+# plot loadings
+ggplot(
+  data = PC_loadings,
+  aes(x = component, y = scores, fill = var)
+  )+
+  geom_bar(
+    position = "fill",
+    stat = "identity",
+    colour="#666666"
+  )+
+  facet_grid(factor(PCA, levels = c("distances","points","land_use"))~., scales ="free", space = "free")+
+  coord_flip()+
+  theme_bw()+
+  theme(
+    axis.title = element_blank()
+  )
+
+# PC scores data
+data4model_sc <- data4model %>% select(MMI_mean, EQC_mean, GESAMT, RIV_TYPE, X, Y) %>% 
+  mutate(
+    pnt_comp1 = PC_pnt$scores[,1],
+    pnt_comp2 = PC_pnt$scores[,2],
+    dst_comp1 = PC_dst$scores[,1],
+    dst_comp2 = PC_dst$scores[,2],
+    dst_comp3 = PC_dst$scores[,3],
+    dst_comp4 = PC_dst$scores[,4],
+    lcc_comp1 = PC_lcc$scores[,1]
+  )
+
+## 5. XGBoost ####
+### 5.1 Training and Test sets ####
 set.seed(1234)
 inTrain <- createDataPartition(
   y = data4model$EQC_mean,
@@ -229,137 +345,342 @@ inTrain <- createDataPartition(
   list = F
 )
 
-train <- data4model[inTrain,] 
-test <- data4model[-inTrain,] 
+train_coords <-data4model[inTrain,] %>% select(X,Y) 
+test_coords <-data4model[-inTrain,] %>% select(X,Y) 
 
-# plot Class counts
-ggplot(train)+
-  geom_histogram(aes(x = EQC_mean), stat = "count")+
-  theme_bw()
+train_reg <- data4model[inTrain,] %>% select(-EQC_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = train_coords)
+test_reg <- data4model[-inTrain,] %>% select(-EQC_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = test_coords)
 
-## 2. GAM ####
-
-# build initial model
-gam_model <- gam(as.numeric(EQC_mean) ~ s(TOT_WASTE, by = interaction(RIV_TYPE,GESAMT)) + s(other, by = interaction(RIV_TYPE,GESAMT)) + s(weir, by = interaction(RIV_TYPE,GESAMT)) +
-                   s(culvert, by = interaction(RIV_TYPE,GESAMT)) + s(ford, by = interaction(RIV_TYPE,GESAMT)) + s(dam, by = interaction(RIV_TYPE,GESAMT)) + s(ramp, by = interaction(RIV_TYPE,GESAMT)) + s(num_ID_WWTP, by = interaction(RIV_TYPE,GESAMT)) +
-                   s(num_SWOF_ID, by = interaction(RIV_TYPE,GESAMT)) + s(Agriculture_prop, by = interaction(RIV_TYPE,GESAMT)) + s(Urban_prop, by = interaction(RIV_TYPE,GESAMT)) + s(semi_Natural_prop, by = interaction(RIV_TYPE,GESAMT)) +
-                   s(cros_hw, by = interaction(RIV_TYPE,GESAMT)) + s(cros_rail, by = interaction(RIV_TYPE,GESAMT)) + s(X,Y, by = interaction(RIV_TYPE,GESAMT))+s(Agriculture_prop, Urban_prop, semi_Natural_prop, by = interaction(RIV_TYPE,GESAMT)) + RIV_TYPE * GESAMT,
-                 select = T,
-                 data = train,
-                 family = ocat(R = 4)
-                 )
-
-# check model
-gam.check(gam_model)
-
-# summary and plot
-summary(gam_model)
-plot.gam(gam_model, trans = plogis, scheme = 2)
-
-# check concurvity
-concurvity(gam_model, full = T)
+train_clas <- data4model[inTrain,] %>% select(-MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = train_coords)
+test_clas <- data4model[-inTrain,] %>% select(-MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = test_coords)
 
 
+# standardized data
+train_coords <-data4model_std[inTrain,] %>% select(X,Y) 
+test_coords <-data4model_std[-inTrain,] %>% select(X,Y) 
 
-## 3. XGBoost ####
+train_reg_std <- data4model_std[inTrain,] %>% select(-EQC_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = train_coords)
+test_reg_std <- data4model_std[-inTrain,] %>% select(-EQC_mean, -X,-Y) %>%  
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = test_coords)
 
-# extract target
-target <- as.numeric(train$EQC_mean)-1
 
-# one-hot encode rivtype
-train <- train %>% mutate(rv_count = 1) %>% 
-pivot_wider(names_from = RIV_TYPE, values_from = rv_count, values_fill = 0, names_prefix = "RT_")
+train_clas_std <- data4model_std[inTrain,] %>% select(-MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = train_coords)
+test_clas_std <- data4model_std[-inTrain,] %>% select(-MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = test_coords)
 
-# extract data & remove redundant info
-train_ini <- train %>% 
-  select(-EQC_mean,
-         -Wetland) %>% 
-  sapply(as.numeric)
+# PCA scores
+train_coords <-data4model_sc[inTrain,] %>% select(X,Y) 
+test_coords <-data4model_sc[-inTrain,] %>% select(X,Y) 
 
-# create xgb data matrix
-dtrain <- xgb.DMatrix(data = train_ini, label = target)
+train_reg_sc <- data4model_sc[inTrain,] %>% select(-EQC_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = train_coords)
+test_reg_sc <- data4model_sc[-inTrain,] %>% select(-EQC_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = test_coords)
 
-# set model parameters
-xgb_params <- list(
-  "objective" = "multi:softprob",
-  "eval_metric" = "mlogloss",
-  "num_class" = 4
+train_clas_sc <- data4model_sc[inTrain,] %>% select(-MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = train_coords)
+test_clas_sc <- data4model_sc[-inTrain,] %>% select(-MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = test_coords)
+
+# create learners
+xgb_reg_learner <- makeLearner(
+  "regr.xgboost",
+  predict.type = "response"
 )
 
-# build initial model
-xgb_model <- xgb.cv(
-  data = dtrain,
-  params = xgb_params,
-  nrounds = 250,
-  nfold = 10,
-  prediction = T
-  )
-
-# predictions & classification error
-OOF_prediction <- data.frame(xgb_model$pred) %>%
-  mutate(max_prob = max.col(., ties.method = "last"),
-         label = target + 1)
-head(OOF_prediction)
-
-# confusion matrix
-confusionMatrix(factor(OOF_prediction$max_prob),
-                factor(OOF_prediction$label),
-                mode = "everything")
-
-# train model
-train_model <- xgb.train(
-  params = xgb_params,
-  data = dtrain,
-  nrounds = 250
+xgb_clas_learner <- makeLearner(
+  "classif.xgboost",
+  predict.type = "response"
 )
 
+### 5.2 Hyper-parameter tuning ####
+parallelStartSocket(detectCores()-1)
+tuned_reg <- tuneParams(
+  learner = xgb_reg_learner,
+  task = train_reg,
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+parallelStartSocket(detectCores()-1)
+tuned_clas <- tuneParams(
+  learner = xgb_clas_learner,
+  task = train_clas,
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+# standardized data
+parallelStartSocket(detectCores()-1)
+tuned_reg_std <- tuneParams(
+  learner = xgb_reg_learner,
+  task = train_reg_std,
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+parallelStartSocket(detectCores()-1)
+tuned_clas_std <- tuneParams(
+  learner = xgb_clas_learner,
+  task = train_clas_std,
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+# PCA scores
+parallelStartSocket(detectCores()-1)
+tuned_reg_sc <- tuneParams(
+  learner = xgb_reg_learner,
+  task = train_reg_sc,
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+parallelStartSocket(detectCores()-1)
+tuned_clas_sc <- tuneParams(
+  learner = xgb_clas_learner,
+  task = train_clas_sc,
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+# Evaluate tuning
+generateHyperParsEffectData(tuned_reg, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mse.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+generateHyperParsEffectData(tuned_clas, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mmce.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+
+generateHyperParsEffectData(tuned_reg_std, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mse.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+generateHyperParsEffectData(tuned_clas_std, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mmce.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+
+generateHyperParsEffectData(tuned_reg_sc, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mse.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+generateHyperParsEffectData(tuned_clas_sc, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mmce.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+
+### 5.3 Build models ####
+
+# models
+xgb_regmodel <- train(setHyperPars(learner = xgb_reg_learner, par.vals = tuned_reg$x), train_reg)
+xgb_clasmodel <- train(setHyperPars(learner = xgb_clas_learner, par.vals = tuned_clas$x), train_clas)
+
+xgb_regmodel_std <- train(setHyperPars(learner = xgb_reg_learner, par.vals = tuned_reg_std$x), train_reg_std)
+xgb_clasmodel_std <- train(setHyperPars(learner = xgb_clas_learner, par.vals = tuned_clas_std$x), train_clas_std)
+
+xgb_regmodel_sc <- train(setHyperPars(learner = xgb_reg_learner, par.vals = tuned_reg_sc$x), train_reg_sc)
+xgb_clasmodel_sc <- train(setHyperPars(learner = xgb_clas_learner, par.vals = tuned_clas_sc$x), train_clas_sc)
+
 # feature importance
-xgb.importance(feature_names = colnames(train_ini), model = train_model) %>% 
-xgb.ggplot.importance()
+getFeatureImportance(xgb_regmodel)
+getFeatureImportance(xgb_regmodel_std)
+getFeatureImportance(xgb_regmodel_sc)
 
-# Hyper-parameter tuning
-xgbFit_4cl <- train %>% as.data.frame() %>% mutate(EQC_mean = factor(EQC_mean, levels = c("good", "moderate", "bad", "very_bad"))) %>% 
-  caret::train(
-    form = EQC_mean ~ .,
-    data = .,
-    method = "xgbTree",
-    tuneLength = 10,
-    trControl = trainControl(
-      method = "cv", 
-      number = 10,
-      classProbs = T,
-      summaryFunction = mnLogLoss
-    ),
-    objective = "multi:softprob",
-    num_class = 4
-  )
+getFeatureImportance(xgb_clasmodel)
+getFeatureImportance(xgb_clasmodel_std)
+getFeatureImportance(xgb_clasmodel_sc)
 
-plot(varImp(xgbFit_4cl))
-partial(xgbFit_4cl, pred.var = "X", train = train, prob = T, which.class = "good") %>% autoplot(smooth = T)
+### 5.4 Predictions #### 
+pred <- predict(xgb_regmodel, task = train_reg)
+pred_std <- predict(xgb_regmodel_std, task = train_reg_std)
+pred_sc <- predict(xgb_regmodel_sc, task = train_reg_sc)
 
-# feature importance
-xgb.importance(feature_names = colnames(train_fin), model = final_model) %>% 
-  xgb.ggplot.importance()
+# Performance
+performance(pred)
+performance(pred_std)
+performance(pred_sc)
 
-# Partial dependence plots
-partial(final_model, pred.var = "semi_Natural_prop", train = train_fin, prob = T, which.class = 1) %>% autoplot(smooth = T)
+## 6. GWR ####
 
-# model performance with test data
+# data from predictions
+pred_data <- train_reg$env$data %>% bind_cols(pred$data, train_reg$coordinates) %>% 
+  select(response, Urban_prop, semi_Natural_prop, Urban, TOT_WASTE, cros_hw, culvert, X, Y) %>% st_as_sf(coords = c("X","Y"))
 
-## 4. Model comparisons ####
+# standardized data
+pred_data_std <- train_reg_std$env$data %>% bind_cols(pred_std$data, train_reg_std$coordinates) %>% 
+  select(response, Urban_prop, semi_Natural_prop, semi_Natural, TOT_WASTE, culvert, X, Y) %>% st_as_sf(coords = c("X","Y"))
+
+# PCA scores
+pred_data_sc <- train_reg_sc$env$data %>% bind_cols(pred_sc$data, train_reg_sc$coordinates) %>% 
+  select(response, pnt_comp1, pnt_comp2, lcc_comp1, dst_comp2, GESAMT.4, GESAMT.6, GESAMT.7, X, Y) %>% st_as_sf(coords = c("X","Y"))
+
+
+# bandwidths
+bwG <- bw.gwr(response ~ Urban_prop + semi_Natural_prop + Urban + TOT_WASTE + cros_hw + culvert, 
+         data = pred_data,
+         dMat = gw.dist(as.matrix(train_reg$coordinates)),
+         adaptive = T
+         )
+# standardized data
+bwG_std <- bw.gwr(response ~ Urban_prop + semi_Natural_prop + semi_Natural + TOT_WASTE + culvert, 
+              data = pred_data_std,
+              dMat = gw.dist(as.matrix(train_reg_std$coordinates)),
+              adaptive = T
+              )
+# PCA scores
+bwG_sc <- bw.gwr(response ~ pnt_comp1 + pnt_comp2 + lcc_comp1 + dst_comp2 + GESAMT.4 + GESAMT.6 + GESAMT.7,
+              data = pred_data_sc,
+              dMat = gw.dist(as.matrix(train_reg_sc$coordinates)),
+              adaptive = T
+              )
+
+# models
+gwr_model <- gwr.basic(
+  response ~ Urban_prop + semi_Natural_prop + Urban + TOT_WASTE + cros_hw + culvert,
+  data = pred_data, 
+  bw = bwG,
+  adaptive = T,
+  dMat = gw.dist(as.matrix(train_reg$coordinates))
+)
+
+# standardized data
+gwr_model_std <- gwr.basic(
+  response ~ Urban_prop + semi_Natural_prop + semi_Natural + TOT_WASTE + culvert,
+  data = pred_data_std, 
+  bw = bwG_std,
+  adaptive = T,
+  dMat = gw.dist(as.matrix(train_reg_std$coordinates))
+)
+
+# PCA scores
+gwr_model_sc <- gwr.basic(
+  response ~ pnt_comp1 + pnt_comp2 + lcc_comp1 + dst_comp2 + GESAMT.4 + GESAMT.6 + GESAMT.7,
+  data = pred_data_sc, 
+  bw = bwG_sc,
+  adaptive = T,
+  dMat = gw.dist(as.matrix(train_reg_sc$coordinates))
+)
+
+## 7. Model Performance ####
+### 7.1 XGBoost ####
+# test predictions
+pred_test_xgb <- predict(xgb_regmodel, task = test_reg)
+pred_test_std_xgb <- predict(xgb_regmodel_std, task = test_reg_std)
+pred_test_sc_xgb <- predict(xgb_regmodel_sc, task = test_reg_sc)
+
+pred_test_cl_xgb <- predict(xgb_clasmodel, task = test_clas)
+pred_test_cl_std_xgb <- predict(xgb_clasmodel_std, task = test_clas_std)
+pred_test_cl_sc_xgb <- predict(xgb_clasmodel_sc, task = test_clas_sc)
+
+# performance
+performance(pred_test_xgb)
+performance(pred_test_std_xgb)
+performance(pred_test_sc_xgb)
+
+performance(pred_test_cl_xgb)
+performance(pred_test_cl_std_xgb)
+performance(pred_test_cl_sc_xgb)
+
+# partial dependence
+generatePartialDependenceData(xgb_clasmodel, test_clas) %>% plotPartialDependence()
+
+### 7.2 GWR & XGBoost ####
 
 # wrangle test data
-target_test <- as.numeric(test$EQC_mean)-1
-dtest <- test %>% select(-EQC_mean) %>% as.numeric() %>% xgb.DMatrix(data = ., label = target_test)
+test_gwr <- test_reg$env$data %>% bind_cols(test_reg$coordinates) %>% st_as_sf(coords = c("X","Y"))
+test_gwr_std <- test_reg_std$env$data %>% bind_cols(test_reg_std$coordinates) %>% st_as_sf(coords = c("X","Y"))
+test_gwr_sc <- test_reg_sc$env$data %>% bind_cols(test_reg_sc$coordinates) %>% st_as_sf(coords = c("X","Y"))
 
-# Confusion matrix
-# GAM
-gampred <- predict.gam(gam_model, test, type = "response") %>% as.data.frame() %>% 
-  rowwise() %>% mutate(pred = colnames(.)[which.max(c_across(1:4))] %>% parse_number())
-gampred$pred <- (gampred$pred + 1) %>% as_factor()
-confusionMatrix(gampred$pred, test$EQC_mean)
+# Predictions
+pred_test_gwr <- gwr.predict(
+  response ~ Urban_prop + semi_Natural_prop + Urban + TOT_WASTE + cros_hw + culvert,
+  data = pred_data, 
+  predictdata = test_gwr,
+  bw = bwG,
+  adaptive = T
+  )
 
-# xgboost
-confusionMatrix(
-  predict(xgbFit_4cl, ),
+# standardized data
+pred_test_gwr_std <- gwr.predict(
+  response ~ Urban_prop + semi_Natural_prop + semi_Natural + TOT_WASTE + culvert,
+  data = pred_data_std, 
+  predictdata = test_gwr,
+  bw = bwG,
+  adaptive = T
 )
+
+# PCA scores
+pred_test_gwr_sc <- gwr.predict(
+  response ~ pnt_comp1 + pnt_comp2 + lcc_comp1 + dst_comp2 + GESAMT.4 + GESAMT.6 + GESAMT.7,
+  data = pred_data_sc, 
+  predictdata = test_gwr_sc,
+  bw = bwG_sc,
+  adaptive = T
+)
+
+# MSE
+sum((test_gwr$MMI_mean-pred_test_gwr$SDF$prediction)^2)/nrow(pred_test_gwr$SDF)
+sum((test_gwr_std$MMI_mean-pred_test_gwr_std$SDF$prediction)^2)/nrow(pred_test_gwr_std$SDF)
+sum((test_gwr_sc$MMI_mean-pred_test_gwr_sc$SDF$prediction)^2)/nrow(pred_test_gwr_sc$SDF)
+
+### 7.3 classification from reg models ####
+
+# xgb
+xgb_cl_from_rg <- pred_test_std_xgb$data %>% mutate(
+  across(
+    .cols = c(truth, response),
+    .fns = ~ case_when(
+      .x <= 0.2 ~ 5,
+      .x > 0.2 & .x <= 0.4 ~ 4,
+      .x > 0.4 & .x <= 0.6 ~ 3,
+      .x > 0.6 ~ 2
+    ),
+    .names = "{.col}_class"
+  )
+) %>% mutate(
+  match = case_when(truth_class == response_class ~ 0, .default = 1)
+)
+
+# gwr_xgb
+gw_xgb_cl_from_rg <- pred_test_gwr$SDF %>% 
+  bind_cols(pred_test_std_xgb$data) %>%
+  select(truth, prediction) %>% 
+  mutate(
+  across(
+    .cols = c(truth, prediction),
+    .fns = ~ case_when(
+      .x <= 0.2 ~ 5,
+      .x > 0.2 & .x <= 0.4 ~ 4,
+      .x > 0.4 & .x <= 0.6 ~ 3,
+      .x > 0.6 ~ 2
+    ),
+    .names = "{.col}_class"
+  )
+) %>% mutate(
+  match = case_when(truth_class == prediction_class ~ 0, .default = 1)
+)
+
+# mmce
+sum(xgb_cl_from_rg$match)/length(xgb_cl_from_rg$match)
+sum(gw_xgb_cl_from_rg$match)/length(gw_xgb_cl_from_rg$match)
