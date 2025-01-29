@@ -26,7 +26,7 @@
 #             not covered by upstream reach. Pay attention to CRS units!
 
 # Code ####
-upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_cols = NULL, dist = NULL, threshold = NULL, Shreve = NULL) {
+upstream_summarize <- function(net, start, IDs, node_cols = NULL, dist = NULL, area = NULL, area_cols = NULL, threshold = NULL, Shreve = NULL) {
   
   # disable traceback
   options(error = NULL)
@@ -34,6 +34,25 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
   # Check for valid class of net input
   if (!is.sfnetwork(net)) {
     stop("net must be an sfnetwork object!", call. = F)  # check for valid network input
+  }
+  
+  # Check presence of ID-columns in data
+  if (any(!(IDs %in% colnames(st_as_sf(net,"nodes"))))) {
+    stop("ID-column not found in net!")
+  }
+  
+  # Check presence of columns in data
+  if(!is.null(node_cols)){
+    if (any(!(node_cols %in% colnames(st_as_sf(net,"nodes"))))) {
+      stop("Column name not found in net!")
+    }
+  }
+  
+  # Check for valid dist input
+  if(!is.null(dist)) {
+    if(!(dist %in% c("min", "max", "mean", "all"))) {
+      stop("dist must be 'min', 'max', 'mean', or 'all'!", call. = F)
+    }
   }
   
   # Check for valid area input
@@ -44,11 +63,13 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
       stop("area must be an sf object which contains only polygon geometries!", call. = F)}  # check for valid network input
   }
   
-  # Check for valid dist input
-  if(!is.null(dist)) {
-    if(!(dist %in% c("min", "max", "mean", "all"))) {
-      stop("dist must be 'min', 'max', 'mean', or 'all'!", call. = F)
-      }
+  if (!is.null(area) & is.null(area_cols)) {
+    stop("must provide area_cols if area is given!")
+  }
+  
+  if (!is.null(area_cols)) {
+    if (any(!(area_cols %in% colnames(area)))) {
+      stop("Column name not found in area!")}
   }
   
   # Check for valid threshold input
@@ -61,20 +82,6 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
     if(!is.logical(Shreve)) {stop("Shreve must be logical!", call. = F)}
   }
   
-  # Check presence of columns in data
-  if (any(!(node_cols %in% colnames(st_as_sf(net,"nodes"))))) {
-    stop("Column name not found in net!")
-  }
-  
-  if (!is.null(area) & is.null(area_cols)) {
-    stop("must provide area_cols if area is given!")
-  }
-  
-  if (!is.null(area_cols)) {
-  if (any(!(area_cols %in% colnames(area)))) {
-    stop("Column name not found in area!")}
-  }
-  
   # Perform the analysis and filtering steps
   nodes_us <- suppressWarnings(igraph::shortest_paths(net, from = start, to = igraph::V(net), mode = "in")) %>%
     unlist(.$vpath) %>%
@@ -83,11 +90,15 @@ upstream_summarize <- function(net, start, node_cols, IDs, area = NULL, area_col
   tab_nodes <- st_as_sf(net, "nodes") %>% mutate(igraph_ID = seq.int(nrow(.)))
   sub_nodes <- tab_nodes[nodes_us,]
 
-  # Calculate the sum of each column in 'cols'
+  # Count IDs
   tab_sum <- sub_nodes %>% lazy_dt() %>% 
-    summarise(across(.cols = all_of(node_cols), ~sum(.x, na.rm = T)),
-              across(.cols = all_of(IDs), ~sum(!is.na(.x)), .names = "num_{.col}")) %>% 
+    summarise(across(.cols = all_of(IDs), ~sum(!is.na(.x)), .names = "num_{.col}")) %>% 
     as_tibble()
+  
+  # summarize node_cols
+  if(!is.null(node_cols)){
+    tab_sum <- tab_sum %>% summarise(across(.cols = all_of(node_cols), ~sum(.x, na.rm = T)))
+  }
   
   # calculate shreve
   if(isTRUE(Shreve)){
