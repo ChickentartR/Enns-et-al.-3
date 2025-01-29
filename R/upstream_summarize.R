@@ -14,16 +14,20 @@
 
 # start - row number of node, from which upstream reache should be calculated.
 
-# node_cols - columns from which the node data should be summarized
-
 # IDs - IDs of nodes, which should be counted. Not the row number of nodes!
 
-# area - sf object with polygon geometry for which upstream reach coverage should be calculated 
+# node_cols - columns from which the node data should be summarized.
 
-# area_cols - columns from which the area data should be summarized
+# dist - calculates min, max, or average distance to points specified by IDs.
+
+# area - sf object with polygon geometry for which upstream reach coverage should be calculated. 
+
+# area_cols - columns from which the area data should be summarized.
 
 # threshold - shrinkage value for the area polygon to not intersect with adjacent polygons
 #             not covered by upstream reach. Pay attention to CRS units!
+
+# Shreve - should stream magnitude be calculated? Number of sources upstream from start.
 
 # Code ####
 upstream_summarize <- function(net, start, IDs, node_cols = NULL, dist = NULL, area = NULL, area_cols = NULL, threshold = NULL, Shreve = NULL) {
@@ -97,7 +101,10 @@ upstream_summarize <- function(net, start, IDs, node_cols = NULL, dist = NULL, a
   
   # summarize node_cols
   if(!is.null(node_cols)){
-    tab_sum <- tab_sum %>% summarise(across(.cols = all_of(node_cols), ~sum(.x, na.rm = T)))
+    col_sum <- sub_nodes %>% lazy_dt() %>% 
+      summarise(across(.cols = all_of(node_cols), ~sum(.x, na.rm = T))) %>% 
+      as_tibble()
+    tab_sum <- bind_cols(tab_sum, col_sum)
   }
   
   # calculate shreve
@@ -146,7 +153,6 @@ upstream_summarize <- function(net, start, IDs, node_cols = NULL, dist = NULL, a
       )) 
       )
     }
-
     tab_sum <- bind_cols(tab_sum, as_tibble(tab_dist)) 
   }
   
