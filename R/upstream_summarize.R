@@ -41,7 +41,7 @@ upstream_summarize <- function(net, start, IDs, node_cols = NULL, dist = NULL, a
   }
   
   # Check for presence of start node in net
-  if (start %in% rownames(st_as_sf(net, "nodes"))) {
+  if (!(start %in% rownames(st_as_sf(net, "nodes")))) {
     stop("start node not present in net!", call. = F)
   }
   
