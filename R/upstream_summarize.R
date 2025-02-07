@@ -37,7 +37,12 @@ upstream_summarize <- function(net, start, IDs, node_cols = NULL, dist = NULL, a
   
   # Check for valid class of net input
   if (!is.sfnetwork(net)) {
-    stop("net must be an sfnetwork object!", call. = F)  # check for valid network input
+    stop("net must be an sfnetwork object!", call. = F)
+  }
+  
+  # Check for presence of start node in net
+  if (start %in% rownames(st_as_sf(net, "nodes"))) {
+    stop("start node not present in net!", call. = F)
   }
   
   # Check presence of ID-columns in data
@@ -110,7 +115,7 @@ upstream_summarize <- function(net, start, IDs, node_cols = NULL, dist = NULL, a
   # calculate shreve
   if(isTRUE(Shreve)){
     tab_sum <- tab_sum %>% mutate(
-      Shreve = st_as_sf(net_rout_blend, "edges") %>% filter(from %in% sub_nodes$igraph_ID & !(from %in% to)) %>% nrow()
+      Shreve = st_as_sf(net, "edges") %>% filter(from %in% sub_nodes$igraph_ID & !(from %in% to)) %>% nrow()
     )
   }
   
