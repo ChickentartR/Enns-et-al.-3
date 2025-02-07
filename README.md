@@ -2,6 +2,38 @@
 Daniel Enns
 2024-10-17
 
+- [<span class="toc-section-number">1</span> Study
+  outline](#study-outline)
+- [<span class="toc-section-number">2</span> Methods](#methods)
+  - [<span class="toc-section-number">2.1</span> Library](#library)
+  - [<span class="toc-section-number">2.2</span> Combining Spatial
+    Data](#combining-spatial-data)
+    - [<span class="toc-section-number">2.2.1</span> Point
+      features](#point-features)
+    - [<span class="toc-section-number">2.2.2</span> Watershed
+      delineation](#watershed-delineation)
+    - [<span class="toc-section-number">2.2.3</span> Network
+      building](#network-building)
+  - [<span class="toc-section-number">2.3</span> Spatial Data
+    quantification](#spatial-data-quantification)
+  - [<span class="toc-section-number">2.4</span> Data analysis and
+    handling](#data-analysis-and-handling)
+    - [<span class="toc-section-number">2.4.1</span> EDA](#eda)
+    - [<span class="toc-section-number">2.4.2</span> Spatial
+      autocorrelation](#spatial-autocorrelation)
+    - [<span class="toc-section-number">2.4.3</span> Data cleaning &
+      feature engeneering](#data-cleaning--feature-engeneering)
+  - [<span class="toc-section-number">2.5</span> Modeling](#modeling)
+    - [<span class="toc-section-number">2.5.1</span> Ensemble machine
+      learning with XGBoost](#ensemble-machine-learning-with-xgboost)
+    - [<span class="toc-section-number">2.5.2</span>
+      GW-XGBoost](#gw-xgboost)
+    - [<span class="toc-section-number">2.5.3</span> Model
+      performance](#model-performance)
+  - [<span class="toc-section-number">2.6</span> Data
+    availability](#data-availability)
+- [<span class="toc-section-number">3</span> References](#references)
+
 # Study outline
 
 Freshwater ecosystems exists in very heterogenous landscapes, including
@@ -16,7 +48,7 @@ learning algorithms (Dedman et al. 2015; Elith, Leathwick, and Hastie
 
 # Methods
 
-## 1. Library
+## Library
 
 The following packages are needed for the analysis:
 
@@ -43,9 +75,9 @@ library(xgboost)
 library(pdp)
 ```
 
-## 2. Combining Spatial Data
+## Combining Spatial Data
 
-### 2.1 Point features
+### Point features
 
 For the spatial analysis all necessary shape and raster files are
 projected into EPSG 25832.
@@ -68,7 +100,7 @@ crossings <- st_intersection(stream_net, transport_net) %>%
   st_cast("POINT")
 ```
 
-### 2.2 Watershed delineation
+### Watershed delineation
 
 In order to delineate upstream watersheds for each bio sampling site the
 SRTM GL1 30m (OpenTopography 2013) digital elevation model will be used
@@ -170,7 +202,7 @@ landcover_sum <- landcover_ws %>% group_by(watersheds.tif, type) %>%
 watersheds_lc <- left_join(ws_poly, landcover_sum, by = "watersheds.tif")
 ```
 
-### 2.3 Network building
+### Network building
 
 The Hessian stream network is a collection of 100 m long line segments,
 each containing a stream ID and a segment ID. The stream ID is designed
@@ -228,7 +260,7 @@ network_blend <- st_network_blend(network, mzb) %>% st_network_blend(.,wwtp) %>%
   st_network_blend(.,dams)
 ```
 
-## 3. Spatial Data quantification
+## Spatial Data quantification
 
 For the quantification of point- and polygon features and their
 attributes I wrote two custom functions, `st_shift()` and
@@ -310,9 +342,9 @@ mzb_data_complete <- foreach(chunk = data_chunks, .combine = rbind, .packages = 
 }
 ```
 
-## 4. Data analysis and handling
+## Data analysis and handling
 
-### 4.1 EDA
+### EDA
 
 Before modeling it is good practice to get a sens of the target and
 explanatory variables. Here, multiple models should perform two
@@ -349,7 +381,7 @@ Although tree ensemble learning algorithms are robust to auto-correlated
 covariates, it is best practice to either drop some related covariates
 or reduce the dimensionallity and use PCA scores as new variables.
 
-### 4.2 Spatial autocorrelation
+### Spatial autocorrelation
 
 Toblers first law states that *“everything is related to everything
 else, but near things are more related than distant things”*. This
@@ -395,7 +427,7 @@ inputs for the geographically wheighted regression (GWR) model. Further,
 spatial heterogenity should be kept in mind for model tuning and cross
 validation (Schratz et al. 2019).
 
-### 4.3 Data cleaning & feature engeneering
+### Data cleaning & feature engeneering
 
 Tree ensemble learning algorithms can handle covariates of different
 types and are robust to auto-correlated covariates. To see how the data
@@ -411,9 +443,9 @@ where transformed in two steps:
     features
 2.  For each stressor variable distances were
 
-## 5. Modeling
+## Modeling
 
-### 5.1 Ensemble machine learning with XGBoost
+### Ensemble machine learning with XGBoost
 
 We first separate the available data into a training and test set by a
 ratio of 80% to 20% respectively.
@@ -431,9 +463,9 @@ inTrain <- createDataPartition(
 # split data
 ```
 
-### 5.2 GW-XGBoost
+### GW-XGBoost
 
-### 5.3 Model performance
+### Model performance
 
 The performance of regression models can be evaluated by comparison of
 the mean squared errors. The classification models can be compared using
@@ -448,7 +480,7 @@ The results in Table XX reveal that model XX is the best performing
 regression model while model XX is the best classifiaction model.
 Further, the geographically wheighted
 
-## 6. Data availability
+## Data availability
 
 Data on WFD invertebrate sampling and the Hessian stream network were
 kindly provided by the Hessian state office for nature, environment and
@@ -464,7 +496,7 @@ Service](https://land.copernicus.eu/en/products/corine-land-cover). The
 SRTM GL1 30m digital elevation model can be downloaded from
 [OpenTopography](https://portal.opentopography.org/raster?opentopoID=OTSRTM.082015.4326.1).
 
-## 7. References
+# References
 
 <div id="refs" class="references csl-bib-body hanging-indent"
 entry-spacing="0">
