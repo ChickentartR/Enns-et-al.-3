@@ -16,20 +16,21 @@
 
 # Code ####
 
-# disable traceback
-options(error = NULL)
-
-# Check for valid class of net input
-if (!is.sfnetwork(net)) {
-  stop("net must be an sfnetwork object!", call. = F)  # check for valid network input
-}
-
-# Check for presence of start node in net
-if (start %in% rownames(st_as_sf(net, "nodes"))) {
-  stop("start node not present in net!", call. = F)
-}
-
 Shreve <- function(net, start) {
+  
+  # disable traceback
+  options(error = NULL)
+  
+  # Check for valid class of net input
+  if (!is.sfnetwork(net)) {
+    stop("net must be an sfnetwork object!", call. = F)  # check for valid network input
+  }
+  
+  # Check for presence of start node in net
+  if (start %in% rownames(st_as_sf(net, "nodes"))) {
+    stop("start node not present in net!", call. = F)
+  }
+  
   
   # Perform filtering steps
   nodes_us <- suppressWarnings(igraph::shortest_paths(net, from = start, to = igraph::V(net), mode = "in")) %>%
