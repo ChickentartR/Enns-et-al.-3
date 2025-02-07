@@ -148,7 +148,7 @@ Figure 1 demonstrates the structure of the watersheds, which were build consecut
 
 ```{r}
 #| label: watershed_example_figure
-#| fig-alt: "Figure 1: Example watershed. Each watershed is build consecutively between specified pourpoints."
+#| fig-cap: "Figure 1: Example watershed. Each watershed is build consecutively between specified pourpoints."
 
 ws_stream <- stream_net %>% filter(str_starts(GEWKZ, "25872")) 
 ws_bio <- mzb %>% filter(str_starts(GEWKZ, "25872"))

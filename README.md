@@ -141,8 +141,9 @@ wbt_watershed(
 Figure 1 demonstrates the structure of the watersheds, which were build
 consecutively between multiple pour points.
 
-<img src="README_files/figure-commonmark/watershed_example_figure-1.png"
-data-fig-alt="Figure 1: Example watershed. Each watershed is build consecutively between specified pourpoints." />
+![Figure 1: Example watershed. Each watershed is build consecutively
+between specified
+pourpoints.](README_files/figure-commonmark/watershed_example_figure-1.png)
 
 The created watershed raster can be read in and converted to polygon
 features, which subsequently be used to intersect the [CORINE Land
