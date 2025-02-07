@@ -1,5 +1,4 @@
-README
-================
+# README
 Daniel Enns
 2024-10-17
 
@@ -32,6 +31,7 @@ library(stars)
 library(sf)
 library(sfnetworks)
 library(tidygraph)
+library(nngeo)
 library(geodata)
 library(whitebox)
 library(osmextract)
@@ -141,13 +141,8 @@ wbt_watershed(
 Figure 1 demonstrates the structure of the watersheds, which were build
 consecutively between multiple pour points.
 
-<figure>
-<img src="README_files/figure-gfm/watershed_example_figure-1.png"
-alt="Figure 1: Example watershed. Each watershed is build consecutively between specified pourpoints." />
-<figcaption aria-hidden="true">Figure 1: Example watershed. Each
-watershed is build consecutively between specified
-pourpoints.</figcaption>
-</figure>
+<img src="README_files/figure-commonmark/watershed_example_figure-1.png"
+data-fig-alt="Figure 1: Example watershed. Each watershed is build consecutively between specified pourpoints." />
 
 The created watershed raster can be read in and converted to polygon
 features, which subsequently be used to intersect the [CORINE Land
@@ -185,14 +180,11 @@ stream (Fig. 2). Each 100 m segment already contains information on the
 in-stream and surrounding habitats structural quality (1 - pristine, 7 -
 completly altered).
 
-<figure>
-<img src="README_files/figure-gfm/ID_example_figure-1.png"
-alt="Figure 2: Example of stream- and segment ID system. The segment number increases in the direction of the source. The stream ID of smaller confluence resembels always that of the bigger stream, in which it flows into, plus additional numbers." />
-<figcaption aria-hidden="true">Figure 2: Example of stream- and segment
-ID system. The segment number increases in the direction of the source.
-The stream ID of smaller confluence resembels always that of the bigger
-stream, in which it flows into, plus additional numbers.</figcaption>
-</figure>
+![Figure 2: Example of stream- and segment ID system. The segment number
+increases in the direction of the source. The stream ID of smaller
+confluence resembels always that of the bigger stream, in which it flows
+into, plus additional
+numbers.](README_files/figure-commonmark/ID_example_figure-1.png)
 
 The `sfnetwork` package provides many useful functions for network
 analysis and routing operations, where the main function
@@ -222,13 +214,9 @@ network <- as_sfnetwork(str_net_50m) %>% convert(to_spatial_simple) %>%
   convert(to_spatial_smooth)
 ```
 
-<figure>
-<img src="README_files/figure-gfm/Precision_example_figure-1.png"
-alt="Figure 3: Example for how precision changes the connectedness of the network. The numbers indicate from which node a stream originates." />
-<figcaption aria-hidden="true">Figure 3: Example for how precision
-changes the connectedness of the network. The numbers indicate from
-which node a stream originates.</figcaption>
-</figure>
+![Figure 3: Example for how precision changes the connectedness of the
+network. The numbers indicate from which node a stream
+originates.](README_files/figure-commonmark/Precision_example_figure-1.png)
 
 Sampling sites and point stressors can be blend in as nodes into the
 created network.
@@ -252,16 +240,18 @@ nodes and sums up specified attribute values. Further, it can calculate
 the minimal, maximal, or average network distance between the start
 point and a set of nodes specified by their IDs with the `IDs` argument.
 If no such nodes are present in the sub-network, `inf` or `NaN` values
-are returned. The function can sum up attribute values of provided
-polygons the following way: First, the set of nodes present in the
-sub-network are shifted towards their centroid by 0.1% of their length,
-to avoid including adjacent polygons. Then, it creates a filtering mask
-by selecting all polygons which are touched by the shifted nodes and
-fills in ‘holes’ in the set of polygons. By setting a threshold, the
-mask can be shrunken to avoid selecting adjacent polygons. This mask is
-finally used to select all polygons present in the sub-network, from
-which their specified attributes are summarized. The function contains
-the following set of arguments:
+are returned. Additionally the Shreve stream magnitude, defined as the
+sum of sources upstream from a specifiedy node, can be calculated. The
+function can sum up attribute values of provided polygons the following
+way: First, the set of nodes present in the sub-network are shifted
+towards their centroid by 0.1% of their length, to avoid including
+adjacent polygons. Then, it creates a filtering mask by selecting all
+polygons which are touched by the shifted nodes and fills in ‘holes’ in
+the set of polygons. By setting a threshold, the mask can be shrunken to
+avoid selecting adjacent polygons. This mask is finally used to select
+all polygons present in the sub-network, from which their specified
+attributes are summarized. The function contains the following set of
+arguments:
 
 - `net` : The complete network with blended in points of interest
 - `start` : Row name of node from which to rout upstream
@@ -276,6 +266,7 @@ the following set of arguments:
   distances between start and nodes, specified by `IDs`.
 - `threshold` : Value (in polygon CRS units) by which the polygon mask
   should be shrunken.
+- `Shreve` : logical, should Shreve stream magnitud be calculate?
 
 Before this function can be used, the points from which the function
 should rout must be extracted as nodes from the network and their row
@@ -290,7 +281,8 @@ mzb_nodes <- st_as_sf(network_blend, "nodes") %>% filter(!is.na(ID_SITE)) %>%
 `upstream_summarize()` can be used in combination with rowwise() and
 mutate() to perform the action over multiple points. Depending on the
 number of nodes within the entire network, this task can take quite a
-lot of time, therefore it is best to parallelize and save some time.
+lot of time. Luckily this task can be parallelized to save a lot of
+time.
 
 ``` r
 # set up cluster
@@ -317,9 +309,145 @@ mzb_data_complete <- foreach(chunk = data_chunks, .combine = rbind, .packages = 
 }
 ```
 
-## 4. Modeling
+## 4. Data analysis and handling
 
-## 5. Data availability
+### 4.1 EDA
+
+Before modeling it is good practice to get a sens of the target and
+explanatory variables. Here, multiple models should perform two
+different tasks, regression and multi-class classification. The
+respective target variables are the multi metric index (MMI) and the
+resulting ecological quality class (EQC). The MMI is a summarization of
+multiple core metrics, compared to reference conditions (for more
+details see (Hering et al. 2006)). It ranges from zero to one,
+representing bad to good condition respectively.
+
+![Figure 4: Histogram of the site averaged multi metric
+index.](README_files/figure-commonmark/MMI_histogram-1.png)
+
+![Figure 5: Histogram of the site averaged ecological quality
+class.](README_files/figure-commonmark/EQC_histogram-1.png)
+
+From the EQC histogram (Fig. 5) a strong class imbalance is observable.
+To counter this and increase model performance, the data for the
+minority class could be oversampled using \[…\]. Since the classes are
+of ordered categorical, the minority could be merged with an adjacent
+class, although that would mean a loss of information.
+
+Some covariates follow the same method of quantification and are
+therefore auto correlated by default. Sites at bigger reaches will have
+more point stresors in the upstream watershed compared to sites further
+upstream, therefore the different stressor covariates are automatically
+correlated. The correlation can be displayed in a correlation plot (Fig.
+6).
+
+![Figure 6: Correlation plot of
+covariates.](README_files/figure-commonmark/autocorrelation_plot-1.png)
+
+Although tree ensemble learning algorithms are robust to auto-correlated
+covariates, it is best practice to either drop some related covariates
+or reduce the dimensionallity and use PCA scores as new variables.
+
+### 4.2 Spatial autocorrelation
+
+Toblers first law states that *“everything is related to everything
+else, but near things are more related than distant things”*. This
+degree can be quantified by the Moranes Index, which can be calculated
+with distance-based weight matrix for points.
+
+``` r
+# k-nearest neighbours 
+suppressPackageStartupMessages(require(deldir)) data_nb_knn <- knn2nb(knearneigh(data_all,k = 1))  
+# distance neighbours 
+dsts <- unlist(nbdists(data_nb_knn, data_all)) summary(dsts) max_1nn <- max(dsts)  data_nb_dst <- dnearneigh(data_all, d1 = 0, d2 = 0.75*max_1nn)  data_lw <- nb2listw(data_nb_dst, style = "W", zero.policy = T)  
+# Moran statistics 
+moran.test(data_all$MMI_mean, data_lw, alternative = "greater") moran.plot(data_all$MMI_mean, data_lw) 
+```
+
+       Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+        1.0   332.7   840.2  1197.1  1663.7  8718.0 
+
+
+        Moran I test under randomisation
+
+    data:  data_all$MMI_mean  
+    weights: data_lw  
+    n reduced by no-neighbour observations  
+
+    Moran I statistic standard deviate = 39.571, p-value < 2.2e-16
+    alternative hypothesis: greater
+    sample estimates:
+    Moran I statistic       Expectation          Variance 
+         0.4357911968     -0.0005844535      0.0001216123 
+
+The index shows a significant deviation from the expectation, signifying
+strong spatial autocorrelation. This can also be visualized with a
+Moranes plot.
+
+![Figure 6: Moranes plot for the site averaged multi metric
+index.](README_files/figure-commonmark/moranes_plot-1.png)
+
+Consequently, a geographically weighted XGBoost model should be
+calculated following \[Li (2019)\](Schimohr, Doebler, and Scheiner
+2022), by using the geo-referenced predictions from the XGBoost model as
+inputs for the geographically wheighted regression (GWR) model. Further,
+spatial heterogenity should be kept in mind for model tuning and cross
+validation (Schratz et al. 2019).
+
+### 4.3 Data cleaning & feature engeneering
+
+Tree ensemble learning algorithms can handle covariates of different
+types and are robust to auto-correlated covariates. To see how the data
+cleaning and feature engeneering influences the model performance, the
+same data was prepared in three different ways. Modelling was performed
+on the raw data, on data with standardized covariates and on scores
+derived from three separate PCAs performed on point stressor, point
+stressor distance and land use variables. Beforehand, distance variables
+where transformed in two steps:
+
+1.  A five meter tolerance was added to distances with zero meters and
+    missing values were replaced by zero, representing absence of
+    features
+2.  For each stressor variable distances were
+
+## 5. Modeling
+
+### 5.1 Ensemble machine learning with XGBoost
+
+We first separate the available data into a training and test set by a
+ratio of 80% to 20% respectively.
+
+``` r
+set.seed(1234)
+
+# create split
+inTrain <- createDataPartition(
+  y = data4model$EQC_mean,
+  p = 0.8,
+  list = F
+)
+
+# split data
+```
+
+### 5.2 GW-XGBoost
+
+### 5.3 Model performance
+
+The performance of regression models can be evaluated by comparison of
+the mean squared errors. The classification models can be compared using
+the missclassification rate. The predicted values from the regression
+models can be translated to the EQC, which can also be evaluated via the
+misclassification rate.
+
+``` r
+```
+
+The results in Table XX reveal that model XX is the best performing
+regression model while model XX is the best classifiaction model.
+Further, the geographically wheighted
+
+## 6. Data availability
 
 Data on WFD invertebrate sampling and the Hessian stream network were
 kindly provided by the Hessian state office for nature, environment and
@@ -334,6 +462,8 @@ shapefiles and rasters are available at [Copernicus Land Monitoring
 Service](https://land.copernicus.eu/en/products/corine-land-cover). The
 SRTM GL1 30m digital elevation model can be downloaded from
 [OpenTopography](https://portal.opentopography.org/raster?opentopoID=OTSRTM.082015.4326.1).
+
+## 7. References
 
 <div id="refs" class="references csl-bib-body hanging-indent"
 entry-spacing="0">
@@ -365,12 +495,31 @@ Boosted Regression Trees.” *Journal of Animal Ecology* 77 (4): 802–13.
 
 </div>
 
+<div id="ref-hering2006" class="csl-entry">
+
+Hering, Daniel, Christian K. Feld, Otto Moog, and Thomas Ofenböck. 2006.
+“Cook Book for the Development of a Multimetric Index for Biological
+Condition of Aquatic Ecosystems: Experiences from the European AQEM and
+STAR Projects and Related Initiatives.” In, 311–24. Springer
+Netherlands. <https://doi.org/10.1007/978-1-4020-5493-8_22>.
+
+</div>
+
 <div id="ref-heß2023" class="csl-entry">
 
 Heß, Sebastian, Delia Hof, Matthias Oetken, and Andrea Sundermann. 2023.
 “Effects of Multiple Stressors on Benthic Invertebrates Using Water
 Framework Directive Monitoring Data.” *Science of The Total Environment*
 878 (June): 162952. <https://doi.org/10.1016/j.scitotenv.2023.162952>.
+
+</div>
+
+<div id="ref-li2019" class="csl-entry">
+
+Li, Lianfa. 2019. “Geographically Weighted Machine Learning and
+Downscaling for High-Resolution Spatiotemporal Estimations of Wind
+Speed.” *Remote Sensing* 11 (11): 1378.
+<https://doi.org/10.3390/rs11111378>.
 
 </div>
 
@@ -397,6 +546,26 @@ Physical, Chemical and Anthropogenic Stress Variables.” *Hydrobiologia*
 
 OpenTopography. 2013. “Shuttle Radar Topography Mission (SRTM) Global.”
 <https://doi.org/10.5069/G9445JDF>.
+
+</div>
+
+<div id="ref-schimohr2022" class="csl-entry">
+
+Schimohr, Katja, Philipp Doebler, and Joachim Scheiner. 2022.
+“Prediction of Bike-Sharing Trip Counts: Comparing Parametric Spatial
+Regression Models to a Geographically Weighted XGBoost Algorithm.”
+*Geographical Analysis* 55 (4): 651–84.
+<https://doi.org/10.1111/gean.12354>.
+
+</div>
+
+<div id="ref-schratz2019" class="csl-entry">
+
+Schratz, Patrick, Jannes Muenchow, Eugenia Iturritxa, Jakob Richter, and
+Alexander Brenning. 2019. “Hyperparameter Tuning and Performance
+Assessment of Statistical and Machine-Learning Algorithms Using Spatial
+Data.” *Ecological Modelling* 406 (August): 109–20.
+<https://doi.org/10.1016/j.ecolmodel.2019.06.002>.
 
 </div>
 

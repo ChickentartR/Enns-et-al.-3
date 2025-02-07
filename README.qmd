@@ -1,16 +1,17 @@
 ---
 title: "README"
-author: "Daniel Enns"
+author: 
+  - name: Daniel Enns
+    orcid: 0000-0003-1742-8743
+    email: daniel.enns@stud.uni-frankfurt.de
 date: "2024-10-17"
-output:
-  github_document: default
-always_allow_html: true
+format: gfm
 bibliography: references.bib
+editor: visual
+echo: false
+warning: false
+message: false
 ---
-
-```{r setup, include = FALSE}
-knitr::opts_chunk$set(warning = FALSE)
-```
 
 # Study outline
 
@@ -18,12 +19,15 @@ Freshwater ecosystems exists in very heterogenous landscapes, including not only
 
 # Methods
 
-```{r load_libraries_data, include=FALSE}
+```{r}
+#| label: load_libraries_data
+
 library(readxl)
 library(tidyverse)
 library(stars)
 library(sf)
 library(sfnetworks)
+library(spdep)
 library(tidygraph)
 library(geodata)
 library(whitebox)
@@ -142,7 +146,9 @@ wbt_watershed(
 
 Figure 1 demonstrates the structure of the watersheds, which were build consecutively between multiple pour points.
 
-```{r watershed_example_figure, echo=F, fig.cap="Figure 1: Example watershed. Each watershed is build consecutively between specified pourpoints."}
+```{r}
+#| label: watershed_example_figure
+#| fig-alt: "Figure 1: Example watershed. Each watershed is build consecutively between specified pourpoints."
 
 ws_stream <- stream_net %>% filter(str_starts(GEWKZ, "25872")) 
 ws_bio <- mzb %>% filter(str_starts(GEWKZ, "25872"))
@@ -198,7 +204,9 @@ watersheds_lc <- left_join(ws_poly, landcover_sum, by = "watersheds.tif")
 
 The Hessian stream network is a collection of 100 m long line segments, each containing a stream ID and a segment ID. The stream ID is designed in such a way, that it consecutively builds upon the ID of a previous stream segment, adding numbers to it, whenever the stream splits in upstream direction. The segment number increases towards the source of a stream (Fig. 2). Each 100 m segment already contains information on the in-stream and surrounding habitats structural quality (1 - pristine, 7 - completly altered).
 
-```{r ID_example_figure,echo=FALSE , fig.cap = "Figure 2: Example of stream- and segment ID system. The segment number increases in the direction of the source. The stream ID of smaller confluence resembels always that of the bigger stream, in which it flows into, plus additional numbers."}
+```{r}
+#| label: ID_example_figure
+#| fig-cap: "Figure 2: Example of stream- and segment ID system. The segment number increases in the direction of the source. The stream ID of smaller confluence resembels always that of the bigger stream, in which it flows into, plus additional numbers."
 
 str_net_plot <- stream_net %>% filter(str_starts(GEWKZ, "24848292")) %>% 
   ggplot()+
@@ -233,7 +241,9 @@ network <- as_sfnetwork(str_net_50m) %>% convert(to_spatial_simple) %>%
   convert(to_spatial_smooth)
 ```
 
-```{r Precision_example_figure,echo=FALSE , fig.cap = "Figure 3: Example for how precision changes the connectedness of the network. The numbers indicate from which node a stream originates."}
+```{r}
+#| label: Precision_example_figure
+#| fig-cap: "Figure 3: Example for how precision changes the connectedness of the network. The numbers indicate from which node a stream originates."
 
 net_1 <- stream_net %>% filter(str_starts(GEWKZ, "24848292")) %>% as_sfnetwork() %>% convert(to_spatial_simple) %>% convert(to_spatial_smooth)
 net_2 <- stream_net %>% filter(str_starts(GEWKZ, "24848292")) %>% st_set_precision(0.1) %>% as_sfnetwork() %>% convert(to_spatial_simple) %>%
@@ -332,7 +342,10 @@ mzb_data_complete <- foreach(chunk = data_chunks, .combine = rbind, .packages = 
 
 Before modeling it is good practice to get a sens of the target and explanatory variables. Here, multiple models should perform two different tasks, regression and multi-class classification. The respective target variables are the multi metric index (MMI) and the resulting ecological quality class (EQC). The MMI is a summarization of multiple core metrics, compared to reference conditions (for more details see [@hering2006]). It ranges from zero to one, representing bad to good condition respectively.
 
-```{r MMI_histogram, echo=F, fig.cap="Figure 4: Histogram of the site averaged multi metric index"}
+```{r}
+#| label: MMI_histogram
+#| fig-cap: "Figure 4: Histogram of the site averaged multi metric index."
+
 data4model %>% ggplot()+
   geom_histogram(
     aes(x = MMI_mean),
@@ -351,7 +364,10 @@ data4model %>% ggplot()+
   )
 ```
 
-```{r EQC_histogram, echo=F, fig.cap="Figure 5: Histogram of the site averaged ecological quality class"}
+```{r}
+#| label: EQC_histogram
+#| fig-cap: "Figure 5: Histogram of the site averaged ecological quality class."
+
 data_all %>% ggplot()+
   geom_histogram(
     aes(x = EQC_mean),
@@ -370,11 +386,13 @@ data_all %>% ggplot()+
   )
 ```
 
-From the EQC histogram (Fig. 5) a strong class imbalance is observable. To counter this and increase model performance, the data for the minority class could be oversampled using [...]. Since the classes are of ordered categorical, the minority could be merged with an adjacent class, although that would mean a loss of information.
+From the EQC histogram (Fig. 5) a strong class imbalance is observable. To counter this and increase model performance, the data for the minority class could be oversampled using \[...\]. Since the classes are of ordered categorical, the minority could be merged with an adjacent class, although that would mean a loss of information.
 
 Some covariates follow the same method of quantification and are therefore auto correlated by default. Sites at bigger reaches will have more point stresors in the upstream watershed compared to sites further upstream, therefore the different stressor covariates are automatically correlated. The correlation can be displayed in a correlation plot (Fig. 6).
 
-```{r autocorrelation_plot, echo=F, fig.cap="Figure 6: Correlation plot of covariates"}
+```{r}
+#| label: autocorrelation_plot
+#| fig-cap: "Figure 6: Correlation plot of covariates."
 
 data4model %>% select(TOT_WASTE, dam, num_ID_WWTP, num_SWOF_ID, cros_hw, cros_rail, dist_ID_WWTP_min, dist_SWOF_ID_min, Urban_prop:semi_Natural_prop) %>% 
   chart.Correlation(histogram = T, pch = 19)
@@ -396,7 +414,9 @@ dsts <- unlist(nbdists(data_nb_knn, data_all)) summary(dsts) max_1nn <- max(dsts
 moran.test(data_all$MMI_mean, data_lw, alternative = "greater") moran.plot(data_all$MMI_mean, data_lw) 
 ```
 
-```{r Moranes_index, echo=F}
+```{r}
+#| label: Moranes_index
+
 suppressPackageStartupMessages(require(deldir))
 data_nb_knn <- knn2nb(knearneigh(data_all,k = 1))
 
@@ -415,7 +435,10 @@ moran.test(data_all$MMI_mean, data_lw, alternative = "greater")
 
 The index shows a significant deviation from the expectation, signifying strong spatial autocorrelation. This can also be visualized with a Moranes plot.
 
-```{r moranes_plot, echo=F, fig.cap="Figure x4: Moranes plot for the site averaged multi metric index"}
+```{r}
+#| label: moranes_plot
+#| fig-cap: "Figure 6: Moranes plot for the site averaged multi metric index."
+
 moran.plot(data_all$MMI_mean, data_lw, xlab = "mean MMI", ylab = "spatially lagged mean MMI")
 ```
 
@@ -462,4 +485,4 @@ The results in Table XX reveal that model XX is the best performing regression m
 
 Data on WFD invertebrate sampling and the Hessian stream network were kindly provided by the Hessian state office for nature, environment and geology (HLNUG). Data on wastewater treatment plants, stormwater overflows are available for download from the [WRRL-viewer](https://wrrl.hessen.de/mapapps/resources/apps/wrrl/index.html?lang=de). Further, data on hydrological barriers are available from the [Amber Barrier Atlas](https://amber.international/european-barrier-atlas/). OpenStreetMap data can be downloaded as pbf files at [geofabrik](https://download.geofabrik.de/). CORINE land cover shapefiles and rasters are available at [Copernicus Land Monitoring Service](https://land.copernicus.eu/en/products/corine-land-cover). The SRTM GL1 30m digital elevation model can be downloaded from [OpenTopography](https://portal.opentopography.org/raster?opentopoID=OTSRTM.082015.4326.1).
 
-## 7. Reference
+## 7. References
