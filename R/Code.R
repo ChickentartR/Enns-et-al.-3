@@ -70,12 +70,6 @@ mzb <- cbind(mzb, stream_net[st_nearest_feature(mzb, stream_net),]) %>% select(-
 # save as shapefile for watershed delineation
 st_write(mzb, "./Bio_data/MZB.shp", append = F)
 
-## ... for fish
-
-## ... for diatoms
-
-## ... for macrophytes
-
 ## 3. WWTP, Storm overflow & Dams ####
 
 # load data
@@ -200,7 +194,8 @@ data_all <- foreach(chunk = bio_data_chunks, .combine = rbind, .packages = c("dp
     area = ws_clc,
     area_cols = c("Agriculture", "Urban", "semi-Natural", "Wetland"),
     dist = "all",
-    threshold = 30)
+    threshold = 30,
+    Shreve = T)
     )
 }
   
