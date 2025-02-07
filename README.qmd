@@ -32,6 +32,7 @@ library(httr2)
 library(tmap)
 library(ggpubr)
 library(gridExtra)
+library(PerformanceAnalytics)
 
 setwd("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/Data")
 load("Data.RData")
@@ -278,7 +279,7 @@ network_blend <- st_network_blend(network, mzb) %>% st_network_blend(.,wwtp) %>%
 
 ## 3. Spatial Data quantification
 
-For the quantification of point- and polygon features and their attributes I wrote two custom functions, `st_shift()` and `upstream_summarize()`. The first function is required within the latter and shifts a set of point geometries a proportional distance towards another specified point. The `upstream_summarize()` function builds a sub-network from a given point to all its vertices (stream sources) and extracts the node data, from which it counts the number of specified nodes and sums up specified attribute values. Further, it can calculate the minimal, maximal, or average network distance between the start point and a set of nodes specified by their IDs with the `IDs` argument. If no such nodes are present in the sub-network, `inf` or `NaN` values are returned. The function can sum up attribute values of provided polygons the following way: First, the set of nodes present in the sub-network are shifted towards their centroid by 0.1% of their length, to avoid including adjacent polygons. Then, it creates a filtering mask by selecting all polygons which are touched by the shifted nodes and fills in 'holes' in the set of polygons. By setting a threshold, the mask can be shrunken to avoid selecting adjacent polygons. This mask is finally used to select all polygons present in the sub-network, from which their specified attributes are summarized. The function contains the following set of arguments:
+For the quantification of point- and polygon features and their attributes I wrote two custom functions, `st_shift()` and `upstream_summarize()`. The first function is required within the latter and shifts a set of point geometries a proportional distance towards another specified point. The `upstream_summarize()` function builds a sub-network from a given point to all its vertices (stream sources) and extracts the node data, from which it counts the number of specified nodes and sums up specified attribute values. Further, it can calculate the minimal, maximal, or average network distance between the start point and a set of nodes specified by their IDs with the `IDs` argument. If no such nodes are present in the sub-network, `inf` or `NaN` values are returned. Additionally the Shreve stream magnitude, defined as the sum of sources upstream from a specifiedy node, can be calculated. The function can sum up attribute values of provided polygons the following way: First, the set of nodes present in the sub-network are shifted towards their centroid by 0.1% of their length, to avoid including adjacent polygons. Then, it creates a filtering mask by selecting all polygons which are touched by the shifted nodes and fills in 'holes' in the set of polygons. By setting a threshold, the mask can be shrunken to avoid selecting adjacent polygons. This mask is finally used to select all polygons present in the sub-network, from which their specified attributes are summarized. The function contains the following set of arguments:
 
 -   `net` : The complete network with blended in points of interest
 -   `start` : Row name of node from which to rout upstream
@@ -288,6 +289,7 @@ For the quantification of point- and polygon features and their attributes I wro
 -   `area_cols` : names of attribute columns to summarize, present in `area`
 -   `dist` : Either `'min'`, `'max'`, `'mean'`, or `'all'`. Calculates distances between start and nodes, specified by `IDs`.
 -   `threshold` : Value (in polygon CRS units) by which the polygon mask should be shrunken.
+-   `Shreve` : logical, should Shreve stream magnitud be calculate?
 
 Before this function can be used, the points from which the function should rout must be extracted as nodes from the network and their row name must be saved as a new column.
 
@@ -324,13 +326,13 @@ mzb_data_complete <- foreach(chunk = data_chunks, .combine = rbind, .packages = 
 }
 ```
 
-## 4. Modeling
+## 4. Data analysis and handling
 
 ### 4.1 EDA
 
-Before modeling it is good practice to get a sens of the target and explanatory variables. Here, multiple models should perform two different tasks, regression and multi-class classification. The respective target variables are the multi metric index (MMI) and the resulting ecological quality class (EQC). {MMI description}.
+Before modeling it is good practice to get a sens of the target and explanatory variables. Here, multiple models should perform two different tasks, regression and multi-class classification. The respective target variables are the multi metric index (MMI) and the resulting ecological quality class (EQC). The MMI is a summarization of multiple core metrics, compared to reference conditions (for more details see [@hering2006]). It ranges from zero to one, representing bad to good condition respectively.
 
-```{r MMI_histogram, echo=F, fig.cap="Figure x1: Histogram of the site averaged multi metric index"}
+```{r MMI_histogram, echo=F, fig.cap="Figure 4: Histogram of the site averaged multi metric index"}
 data4model %>% ggplot()+
   geom_histogram(
     aes(x = MMI_mean),
@@ -349,8 +351,8 @@ data4model %>% ggplot()+
   )
 ```
 
-```{r EQC_histogram, echo=F, fig.cap="Figure x2: Histogram of the site averaged ecological quality class"}
-data4model %>% ggplot()+
+```{r EQC_histogram, echo=F, fig.cap="Figure 5: Histogram of the site averaged ecological quality class"}
+data_all %>% ggplot()+
   geom_histogram(
     aes(x = EQC_mean),
     stat = "count",
@@ -368,18 +370,22 @@ data4model %>% ggplot()+
   )
 ```
 
-From the EQC histogram (Fig. x2) a strong class imbalance is observable. To counter this and increase model performance, the data for the minority class could be oversampled using [...]. Since the classes are of ordered categorical, the minority could be merged with an adjacent class, although that would mean a loss of information.
+From the EQC histogram (Fig. 5) a strong class imbalance is observable. To counter this and increase model performance, the data for the minority class could be oversampled using [...]. Since the classes are of ordered categorical, the minority could be merged with an adjacent class, although that would mean a loss of information.
 
-Some covariates follow the same method of quantification and are therefore auto correlated by default. Sites at bigger reaches will have more point stresors in the upstream watershed compared to sites further upstream, therefore the different stressor covariates are automatically correlated. The correlation can be displayed in a correlation plot (Fig. x3).
+Some covariates follow the same method of quantification and are therefore auto correlated by default. Sites at bigger reaches will have more point stresors in the upstream watershed compared to sites further upstream, therefore the different stressor covariates are automatically correlated. The correlation can be displayed in a correlation plot (Fig. 6).
 
-```{r autocorrelation_plot, echo=F, fig.cap="Figure x3: Correlation plot of covariates"}
+```{r autocorrelation_plot, echo=F, fig.cap="Figure 6: Correlation plot of covariates"}
+
+data4model %>% select(TOT_WASTE, dam, num_ID_WWTP, num_SWOF_ID, cros_hw, cros_rail, dist_ID_WWTP_min, dist_SWOF_ID_min, Urban_prop:semi_Natural_prop) %>% 
+  chart.Correlation(histogram = T, pch = 19)
+
 ```
 
 Although tree ensemble learning algorithms are robust to auto-correlated covariates, it is best practice to either drop some related covariates or reduce the dimensionallity and use PCA scores as new variables.
 
 ### 4.2 Spatial autocorrelation
 
-"Every spatial data exhibits some degree of spatial autocorrelation" [...]. This degree can be quantified by the Moranes Index, which can be calculated with distance-based weight matrix for points.
+Toblers first law states that *"everything is related to everything else, but near things are more related than distant things"*. This degree can be quantified by the Moranes Index, which can be calculated with distance-based weight matrix for points.
 
 ``` r
 # k-nearest neighbours 
@@ -410,7 +416,7 @@ moran.test(data_all$MMI_mean, data_lw, alternative = "greater")
 The index shows a significant deviation from the expectation, signifying strong spatial autocorrelation. This can also be visualized with a Moranes plot.
 
 ```{r moranes_plot, echo=F, fig.cap="Figure x4: Moranes plot for the site averaged multi metric index"}
-moran.plot(data_all$MMI_mean, data_lw)
+moran.plot(data_all$MMI_mean, data_lw, xlab = "mean MMI", ylab = "spatially lagged mean MMI")
 ```
 
 Consequently, a geographically weighted XGBoost model should be calculated following [@li2019][@schimohr2022], by using the geo-referenced predictions from the XGBoost model as inputs for the geographically wheighted regression (GWR) model. Further, spatial heterogenity should be kept in mind for model tuning and cross validation [@schratz2019].
@@ -422,10 +428,38 @@ Tree ensemble learning algorithms can handle covariates of different types and a
 1.  A five meter tolerance was added to distances with zero meters and missing values were replaced by zero, representing absence of features
 2.  For each stressor variable distances were
 
-### 4.4 Ensemble machine learning with xgboost
+## 5. Modeling
 
-## 5. Data availability
+### 5.1 Ensemble machine learning with XGBoost
+
+We first separate the available data into a training and test set by a ratio of 80% to 20% respectively.
+
+``` r
+set.seed(1234)
+
+# create split
+inTrain <- createDataPartition(
+  y = data4model$EQC_mean,
+  p = 0.8,
+  list = F
+)
+
+# split data
+```
+
+### 5.2 GW-XGBoost
+
+### 5.3 Model performance
+
+The performance of regression models can be evaluated by comparison of the mean squared errors. The classification models can be compared using the missclassification rate. The predicted values from the regression models can be translated to the EQC, which can also be evaluated via the misclassification rate.
+
+``` r
+```
+
+The results in Table XX reveal that model XX is the best performing regression model while model XX is the best classifiaction model. Further, the geographically wheighted
+
+## 6. Data availability
 
 Data on WFD invertebrate sampling and the Hessian stream network were kindly provided by the Hessian state office for nature, environment and geology (HLNUG). Data on wastewater treatment plants, stormwater overflows are available for download from the [WRRL-viewer](https://wrrl.hessen.de/mapapps/resources/apps/wrrl/index.html?lang=de). Further, data on hydrological barriers are available from the [Amber Barrier Atlas](https://amber.international/european-barrier-atlas/). OpenStreetMap data can be downloaded as pbf files at [geofabrik](https://download.geofabrik.de/). CORINE land cover shapefiles and rasters are available at [Copernicus Land Monitoring Service](https://land.copernicus.eu/en/products/corine-land-cover). The SRTM GL1 30m digital elevation model can be downloaded from [OpenTopography](https://portal.opentopography.org/raster?opentopoID=OTSRTM.082015.4326.1).
 
-## 6. References
+## 7. Reference
