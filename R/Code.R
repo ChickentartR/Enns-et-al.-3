@@ -37,6 +37,7 @@ setwd("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/Data")
 # source function for data allocation
 source("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/R/upstream_summarize.R")
 source("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/R/st_shift.R")
+source("C:/Users/Daniel Enns/Documents/Promotion/MZB/Enns-et-al.-3/R/Shreve.R")
 
 # II. Data generation ####
 ## 1 Stream network from HLNUG ####
@@ -194,16 +195,45 @@ data_all <- foreach(chunk = bio_data_chunks, .combine = rbind, .packages = c("dp
     area = ws_clc,
     area_cols = c("Agriculture", "Urban", "semi-Natural", "Wetland"),
     dist = "all",
-    threshold = 30,
-    Shreve = T)
+    threshold = 30
+    )
     )
 }
+
+# calculate Shreve stream magnitude
+
+# set up cluster
+num_cores <- (detectCores()-1)
+num_cores %>% makeCluster() %>% registerDoParallel()
+
+# split data into chunks
+bio_data_chunks <- data_all %>% split(., ceiling(seq_along(row_number(.)) / (length(row_number(.)) %/% num_cores)))
+
+# run function parallel over data chunks
+data_all <- foreach(chunk = bio_data_chunks, .combine = rbind, .packages = c("dplyr", "dtplyr","sf","sfnetworks","tidygraph")) %dopar% {
+  chunk %>% rowwise() %>% 
+    mutate(
+      Shreve(net_rout_blend, ID_NODE)
+    )
+}    
+
+# if R crashes trying to work with the output dataframe, load in from csv
+data_all <- read.csv("data_all.csv", sep = ";")
+
   
 # III. Modeling ####
 ## 1. Data cleaning ####
 
 # renaming
 data4model <- data_all %>% cbind(st_coordinates(.$geom)) %>% as.data.frame() %>%
+  rename(cros_hw = num_osm_id.x, 
+         cros_rail = num_osm_id.y,
+         dist_cros_hw_min = dist_osm_id.x_min,
+         dist_cros_rail_min = dist_osm_id.y_min,
+         semi_Natural = semi.Natural)
+
+# renaming when data_all is loaded from csv
+data4model <- data_all %>% as.data.frame() %>%
   rename(cros_hw = num_osm_id.x, 
          cros_rail = num_osm_id.y,
          dist_cros_hw_min = dist_osm_id.x_min,
@@ -280,9 +310,10 @@ moran.plot(data_all$MMI_mean, data_lw)
 data4model <- data4model %>% 
   mutate(EQC_mean = replace(EQC_mean, EQC_mean == 1, 2),
          across(c(EQC_mean,GESAMT,RIV_TYPE), as.factor), 
-         Urban_prop = Urban / rowSums(.[19:22]),
-         Agriculture_prop = Agriculture / rowSums(.[19:22]),
-         semi_Natural_prop = semi_Natural / rowSums(.[19:22]))
+         Urban_prop = Urban / rowSums(select(., Agriculture:Wetland)),
+         Agriculture_prop = Agriculture / rowSums(select(., Agriculture:Wetland)),
+         semi_Natural_prop = semi_Natural / rowSums(select(., Agriculture:Wetland))
+  )
 
 # standardize variables
 data4model_std <- normalizeFeatures(data4model, target = c("MMI_mean", "EQC_mean"))
@@ -330,6 +361,19 @@ data4model_sc <- data4model %>% select(MMI_mean, EQC_mean, GESAMT, RIV_TYPE, X, 
     dst_comp4 = PC_dst$scores[,4],
     lcc_comp1 = PC_lcc$scores[,1]
   )
+
+### 4.1 feature engeneering for 2nd version ####
+
+# cahnge meters to kilometers 
+data4model_2nd <- data4model %>% select(-Shreve) %>% 
+  mutate(EQC_mean = replace(EQC_mean, EQC_mean == 1, 2),
+         across(c(EQC_mean,GESAMT,RIV_TYPE), as.factor), 
+         across(X:Y, ~ .x / 1000),
+         across(Agriculture:Wetland, ~ .x / 10^6)
+  )   
+
+# standardize variables
+data4model_std_2nd <- normalizeFeatures(data4model_2nd, target = c("MMI_mean", "EQC_mean"))
 
 ## 5. XGBoost ####
 ### 5.1 Training and Test sets ####
@@ -498,13 +542,29 @@ xgb_regmodel_sc <- train(setHyperPars(learner = xgb_reg_learner, par.vals = tune
 xgb_clasmodel_sc <- train(setHyperPars(learner = xgb_clas_learner, par.vals = tuned_clas_sc$x), train_clas_sc)
 
 # feature importance
-getFeatureImportance(xgb_regmodel)
-getFeatureImportance(xgb_regmodel_std)
-getFeatureImportance(xgb_regmodel_sc)
 
-getFeatureImportance(xgb_clasmodel)
-getFeatureImportance(xgb_clasmodel_std)
-getFeatureImportance(xgb_clasmodel_sc)
+featimp <- bind_rows(getFeatureImportance(xgb_regmodel)$res %>% mutate(handling = "raw", task = "regression"),
+                     getFeatureImportance(xgb_regmodel_std)$res %>% mutate(handling = "standardized", task = "regression"),
+                     getFeatureImportance(xgb_regmodel_sc)$res %>% mutate(handling = "PCA", task = "regression"),
+                     getFeatureImportance(xgb_clasmodel)$res %>% mutate(handling = "raw", task = "classification"),
+                     getFeatureImportance(xgb_clasmodel_std)$res %>% mutate(handling = "standardized", task = "classification"),
+                     getFeatureImportance(xgb_clasmodel_sc)$res %>% mutate(handling = "PCA", task = "classification")
+) %>% mutate(handling = factor(handling, levels = c("raw", "standardized", "PCA")))
+
+featimp %>% filter(importance > 0.05) %>% 
+  ggplot(aes(x = variable, y = importance, fill = handling))+
+  geom_bar(stat = "identity")+
+  facet_grid(handling ~ task, scales = "free", space = "free")+
+  coord_flip()+
+  theme_bw()+
+  theme(
+    axis.title.x = element_text(size = 20, face = "bold"),
+    axis.title.y = element_blank(),
+    axis.text = element_text(size = 16),
+    stip.text = element_text(size = 20, face = "bold"),
+    legend.position = "none"
+  )
+
 
 ### 5.4 Predictions #### 
 pred <- predict(xgb_regmodel, task = train_reg)
@@ -515,6 +575,158 @@ pred_sc <- predict(xgb_regmodel_sc, task = train_reg_sc)
 performance(pred)
 performance(pred_std)
 performance(pred_sc)
+
+### 5.5 XGBoost 2nd version ####
+# units converted to Km and Km^2
+# standardized vs. unstandardized data
+
+#### 5.5.1 Training and Test sets ####
+set.seed(1234)
+inTrain <- createDataPartition(
+  y = data4model_2nd$EQC_mean,
+  p = 0.7,
+  list = F
+)
+
+train_coords_2nd <-data4model_2nd[inTrain,] %>% select(X,Y) 
+test_coords_2nd <-data4model_2nd[-inTrain,] %>% select(X,Y) 
+
+train_reg_2nd <- data4model_2nd[inTrain,] %>% select(-EQC_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = train_coords_2nd)
+test_reg_2nd <- data4model_2nd[-inTrain,] %>% select(-EQC_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = test_coords_2nd)
+
+train_clas_2nd <- data4model_2nd[inTrain,] %>% select(-MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = train_coords_2nd)
+test_clas_2nd <- data4model_2nd[-inTrain,] %>% select(-MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = test_coords_2nd)
+
+
+# standardized data
+train_coords_std_2nd <-data4model_std_2nd[inTrain,] %>% select(X,Y) 
+test_coords_std_2nd <-data4model_std_2nd[-inTrain,] %>% select(X,Y) 
+
+train_reg_std_2nd <- data4model_std_2nd[inTrain,] %>% select(-EQC_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = train_coords_std_2nd)
+test_reg_std_2nd <- data4model_std_2nd[-inTrain,] %>% select(-EQC_mean, -X,-Y) %>%  
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = test_coords_std_2nd)
+
+train_clas_std_2nd <- data4model_std_2nd[inTrain,] %>% select(-MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = train_coords_std_2nd)
+test_clas_std_2nd <- data4model_std_2nd[-inTrain,] %>% select(-MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = test_coords_std_2nd)
+
+
+# create learners
+xgb_reg_learner <- makeLearner(
+  "regr.xgboost",
+  predict.type = "response"
+)
+
+xgb_clas_learner <- makeLearner(
+  "classif.xgboost",
+  predict.type = "response"
+)
+
+#### 5.5.2 Hyper-parameter tuning ####
+parallelStartSocket(detectCores()-1)
+tuned_reg_2nd <- tuneParams(
+  learner = xgb_reg_learner,
+  task = train_reg_2nd,
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+parallelStartSocket(detectCores()-1)
+tuned_clas_2nd <- tuneParams(
+  learner = xgb_clas_learner,
+  task = train_clas_2nd,
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+# standardized data
+parallelStartSocket(detectCores()-1)
+tuned_reg_std_2nd <- tuneParams(
+  learner = xgb_reg_learner,
+  task = train_reg_std_2nd,
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+parallelStartSocket(detectCores()-1)
+tuned_clas_std_2nd <- tuneParams(
+  learner = xgb_clas_learner,
+  task = train_clas_std_2nd,
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+
+# Evaluate tuning
+generateHyperParsEffectData(tuned_reg_2nd, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mse.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+generateHyperParsEffectData(tuned_clas_2nd, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mmce.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+
+generateHyperParsEffectData(tuned_reg_std_2nd, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mse.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+generateHyperParsEffectData(tuned_clas_std_2nd, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mmce.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+
+#### 5.5.3 Build models ####
+
+# models
+xgb_regmodel_2nd <- train(setHyperPars(learner = xgb_reg_learner, par.vals = tuned_reg_2nd$x), train_reg_2nd)
+xgb_clasmodel_2nd <- train(setHyperPars(learner = xgb_clas_learner, par.vals = tuned_clas_2nd$x), train_clas_2nd)
+
+xgb_regmodel_std_2nd <- train(setHyperPars(learner = xgb_reg_learner, par.vals = tuned_reg_std_2nd$x), train_reg_std_2nd)
+xgb_clasmodel_std_2nd <- train(setHyperPars(learner = xgb_clas_learner, par.vals = tuned_clas_std_2nd$x), train_clas_std_2nd)
+
+# feature importance
+featimp_2nd <- bind_rows(getFeatureImportance(xgb_regmodel_2nd)$res %>% mutate(handling = "raw", task = "regression"),
+                     getFeatureImportance(xgb_regmodel_std_2nd)$res %>% mutate(handling = "standardized", task = "regression"),
+                     getFeatureImportance(xgb_clasmodel_2nd)$res %>% mutate(handling = "raw", task = "classification"),
+                     getFeatureImportance(xgb_clasmodel_std_2nd)$res %>% mutate(handling = "standardized", task = "classification"),
+) %>% mutate(handling = factor(handling, levels = c("raw", "standardized")))
+
+featimp_2nd %>% filter(importance > 0.05) %>% 
+  ggplot(aes(x = variable, y = importance, fill = handling))+
+  geom_bar(stat = "identity")+
+  facet_grid(handling ~ task, scales = "free", space = "free")+
+  coord_flip()+
+  theme_bw()+
+  theme(
+    axis.title.x = element_text(size = 20, face = "bold"),
+    axis.title.y = element_blank(),
+    axis.text = element_text(size = 16),
+    stip.text = element_text(size = 20, face = "bold"),
+    legend.position = "none"
+  )
+
+#### 5.5.4 Predictions #### 
+pred_2nd <- predict(xgb_regmodel_2nd, task = train_reg_2nd)
+pred_std_2nd <- predict(xgb_regmodel_std_2nd, task = train_reg_std_2nd)
+
+# Performance
+performance(pred_2nd)
+performance(pred_std_2nd)
 
 ## 6. GWR ####
 
@@ -576,6 +788,47 @@ gwr_model_sc <- gwr.basic(
   adaptive = T,
   dMat = gw.dist(as.matrix(train_reg_sc$coordinates))
 )
+
+### 6.1. GWR 2nd version ####
+# data from predictions
+pred_data_2nd <- train_reg_2nd$env$data %>% bind_cols(pred_2nd$data, train_reg_2nd$coordinates) %>% 
+  select(response, semi_Natural, Urban, TOT_WASTE, cros_hw, culvert, X, Y) %>% st_as_sf(coords = c("X","Y"))
+
+# standardized data
+pred_data_std_2nd <- train_reg_std_2nd$env$data %>% bind_cols(pred_std_2nd$data, train_reg_std_2nd$coordinates) %>% 
+  select(response, Urban, semi_Natural, culvert, cros_hw, X, Y) %>% st_as_sf(coords = c("X","Y"))
+
+# bandwidths
+bwG_2nd <- bw.gwr(response ~ semi_Natural + Urban + TOT_WASTE + cros_hw + culvert, 
+              data = pred_data_2nd,
+              dMat = gw.dist(as.matrix(train_reg_2nd$coordinates)),
+              adaptive = T
+)
+# standardized data
+bwG_std_2nd <- bw.gwr(response ~ Urban + semi_Natural + cros_hw + culvert, 
+                  data = pred_data_std_2nd,
+                  dMat = gw.dist(as.matrix(train_reg_std_2nd$coordinates)),
+                  adaptive = T
+)
+
+# models
+gwr_model_2nd <- gwr.basic(
+  response ~ semi_Natural + Urban + TOT_WASTE + cros_hw + culvert,
+  data = pred_data_2nd, 
+  bw = bwG_2nd,
+  adaptive = T,
+  dMat = gw.dist(as.matrix(train_reg_2nd$coordinates))
+)
+
+# standardized data
+gwr_model_std_2nd <- gwr.basic(
+  response ~ Urban + semi_Natural + cros_hw + culvert,
+  data = pred_data_std_2nd, 
+  bw = bwG_std_2nd,
+  adaptive = T,
+  dMat = gw.dist(as.matrix(train_reg_std_2nd$coordinates))
+)
+
 
 ## 7. Model Performance ####
 ### 7.1 XGBoost ####
@@ -679,3 +932,68 @@ gw_xgb_cl_from_rg <- pred_test_gwr$SDF %>%
 # mmce
 sum(xgb_cl_from_rg$match)/length(xgb_cl_from_rg$match)
 sum(gw_xgb_cl_from_rg$match)/length(gw_xgb_cl_from_rg$match)
+
+### 7.4 Model performance 2nd version ####
+#### 7.4.1 XGBoost ####
+
+pred_test_xgb_2nd <- predict(xgb_regmodel_2nd, task = test_reg_2nd)
+pred_test_std_xgb_2nd <- predict(xgb_regmodel_std_2nd, task = test_reg_std_2nd)
+
+pred_test_cl_xgb_2nd <- predict(xgb_clasmodel_2nd, task = test_clas_2nd)
+pred_test_cl_std_xgb_2nd <- predict(xgb_clasmodel_std_2nd, task = test_clas_std_2nd)
+
+# performance
+performance(pred_test_xgb_2nd)
+performance(pred_test_std_xgb_2nd)
+
+performance(pred_test_cl_xgb_2nd)
+performance(pred_test_cl_std_xgb_2nd)
+
+#### 7.4.2 GWR & XGBoost ####
+
+# wrangle test data
+test_gwr_2nd <- test_reg_2nd$env$data %>% bind_cols(test_reg_2nd$coordinates) %>% st_as_sf(coords = c("X","Y"))
+test_gwr_std_2nd <- test_reg_std_2nd$env$data %>% bind_cols(test_reg_std_2nd$coordinates) %>% st_as_sf(coords = c("X","Y"))
+
+# Predictions
+pred_test_gwr_2nd <- gwr.predict(
+  response ~ Urban + semi_Natural + TOT_WASTE + cros_hw + culvert,
+  data = pred_data_2nd, 
+  predictdata = test_gwr_2nd,
+  bw = bwG_2nd,
+  adaptive = T
+)
+
+# standardized data
+pred_test_gwr_std_2nd <- gwr.predict(
+  response ~ Urban + semi_Natural + cros_hw + culvert,
+  data = pred_data_std_2nd, 
+  predictdata = test_gwr_2nd,
+  bw = bwG_2nd,
+  adaptive = T
+)
+
+# MSE
+sum((test_gwr_2nd$MMI_mean-pred_test_gwr_2nd$SDF$prediction)^2)/nrow(pred_test_gwr_2nd$SDF)
+sum((test_gwr_std_2nd$MMI_mean-pred_test_gwr_std_2nd$SDF$prediction)^2)/nrow(pred_test_gwr_std_2nd$SDF)
+
+#### 7.4.3 classification from reg models ####
+
+# xgb
+xgb_cl_from_rg_2nd <- pred_test_std_xgb_2nd$data %>% mutate(
+  across(
+    .cols = c(truth, response),
+    .fns = ~ case_when(
+      .x <= 0.2 ~ 5,
+      .x > 0.2 & .x <= 0.4 ~ 4,
+      .x > 0.4 & .x <= 0.6 ~ 3,
+      .x > 0.6 ~ 2
+    ),
+    .names = "{.col}_class"
+  )
+) %>% mutate(
+  match = case_when(truth_class == response_class ~ 0, .default = 1)
+)
+
+# mmce
+sum(xgb_cl_from_rg_2nd$match)/length(xgb_cl_from_rg_2nd$match)
