@@ -238,7 +238,7 @@ data4model <- data_all %>% as.data.frame() %>%
          cros_rail = num_osm_id.y,
          dist_cros_hw_min = dist_osm_id.x_min,
          dist_cros_rail_min = dist_osm_id.y_min,
-         semi_Natural = semi.Natural)
+         semi_Natural = "semi-Natural")
 
 # remove units from values
 data4model <- data4model %>% 
@@ -254,11 +254,11 @@ data4model <- data4model %>%
                   TRUE ~ .x
                 )))
 
-# transform distances by 1/dist
+# transform distances
 data4model <- data4model %>% mutate(
   across(.cols= c("dist_ID_WWTP_min", "dist_SWOF_ID_min", "dist_GUID_min", "dist_cros_hw_min", "dist_cros_rail_min"),
          .fns = ~case_when(
-           .x != 0 ~ .x / max(.x),
+           .x != 0 ~ 1 - (.x / (max(.x) + 5)),
            .x == 0 ~ .x
          )
   )
@@ -269,7 +269,7 @@ data4model <- data4model %>%
   select(EQC_mean, 
          GESAMT, 
          TOT_WASTE,
-         other:ramp,
+         dam,
          num_ID_WWTP:cros_rail,
          RIV_TYPE,
          MMI_mean:Y,
@@ -364,7 +364,7 @@ data4model_sc <- data4model %>% select(MMI_mean, EQC_mean, GESAMT, RIV_TYPE, X, 
 
 ### 4.1 feature engeneering for 2nd version ####
 
-# cahnge meters to kilometers 
+# change meters to kilometers 
 data4model_2nd <- data4model %>% select(-Shreve) %>% 
   mutate(EQC_mean = replace(EQC_mean, EQC_mean == 1, 2),
          across(c(EQC_mean,GESAMT,RIV_TYPE), as.factor), 
@@ -374,6 +374,18 @@ data4model_2nd <- data4model %>% select(-Shreve) %>%
 
 # standardize variables
 data4model_std_2nd <- normalizeFeatures(data4model_2nd, target = c("MMI_mean", "EQC_mean"))
+
+### 4.2 feature engeneering for final version ####
+
+data4model <- data4model %>% 
+  mutate(EQC_mean = replace(EQC_mean, EQC_mean == 1, 2),
+         across(c(EQC_mean,GESAMT,RIV_TYPE), as.factor), 
+         Urban_prop = Urban / rowSums(select(., Agriculture:Wetland)),
+         Agriculture_prop = Agriculture / rowSums(select(., Agriculture:Wetland)),
+         semi_Natural_prop = semi_Natural / rowSums(select(., Agriculture:Wetland)),
+         TOT_WASTE_Shreve = TOT_WASTE / Shreve,
+         TOT_WASTE_Shreve = (TOT_WASTE_Shreve - min(TOT_WASTE_Shreve)) / (max(TOT_WASTE_Shreve) - min(TOT_WASTE_Shreve)) 
+  )
 
 ## 5. XGBoost ####
 ### 5.1 Training and Test sets ####
@@ -997,3 +1009,81 @@ xgb_cl_from_rg_2nd <- pred_test_std_xgb_2nd$data %>% mutate(
 
 # mmce
 sum(xgb_cl_from_rg_2nd$match)/length(xgb_cl_from_rg_2nd$match)
+## 8. Final Models ####
+### 8.1 Training and Test sets ####
+
+set.seed(1234)
+inTrain <- createDataPartition(
+  y = data4model$EQC_mean,
+  p = 0.7,
+  list = F
+)
+
+train_coords_fin <-data4model[inTrain,] %>% select(X,Y) 
+test_coords_fin <-data4model[-inTrain,] %>% select(X,Y) 
+
+# train set
+train_reg_fin <- data4model[inTrain,] %>% select(-TOT_WASTE, -EQC_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = train_coords_fin)
+train_clas_fin <- data4model[inTrain,] %>% select(-TOT_WASTE, -MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = train_coords_fin)
+
+# test set
+test_clas_fin <- data4model[-inTrain,] %>% select(-TOT_WASTE, -MMI_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "EQC_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeClassifTask(data = ., target = "EQC_mean", coordinates = test_coords_fin)
+test_reg_fin <- data4model[-inTrain,] %>% select(-TOT_WASTE, -EQC_mean, -X,-Y) %>% 
+  createDummyFeatures(target = "MMI_mean", cols = c("GESAMT", "RIV_TYPE")) %>% makeRegrTask(data = ., target = "MMI_mean", coordinates = test_coords_fin)
+
+# create learners
+xgb_reg_learner <- makeLearner(
+  "regr.xgboost",
+  predict.type = "response"
+)
+
+xgb_clas_learner <- makeLearner(
+  "classif.xgboost",
+  predict.type = "response"
+)
+
+### 8.2 Hyper-parameter tuning ####
+
+parallelStartSocket(detectCores()-1)
+tuned_reg_fin <- tuneParamsMultiCrit(
+  learner = xgb_reg_learner,
+  task = train_reg_fin,
+  measures = list(expvar, mse),
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("gamma", lower = 0, upper = 10),
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneMultiCritControlRandom(maxit = 200)
+)
+parallelStop()
+
+parallelStartSocket(detectCores()-1)
+tuned_clas_fin <- tuneParams(
+  learner = xgb_clas_learner,
+  task = train_clas_fin,
+  measures = list(mmce),
+  par.set = makeParamSet(makeIntegerParam("nrounds", lower = 100, upper = 500), 
+                         makeIntegerParam("max_depth", lower = 1, upper = 10), 
+                         makeNumericParam("eta", lower = 0.1, upper = 0.5), 
+                         makeNumericParam("gamma", lower = 0, upper = 10),
+                         makeNumericParam("lambda",lower = -1, upper = 0, trafo = function(x) 10^x)),
+  resampling = makeResampleDesc("SpCV", iters = 5),
+  control = makeTuneControlRandom(maxit = 200)
+)
+parallelStop()
+
+
+# Evaluate tuning
+generateHyperParsEffectData(tuned_reg, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mse.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+generateHyperParsEffectData(tuned_clas, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mmce.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+
+### 8.3 Build models ####
+
+# models
+xgb_regmodel_fin <- train(setHyperPars(learner = xgb_reg_learner, par.vals = tuned_reg_fin$x), train_reg_fin)
+xgb_clasmodel_fin <- train(setHyperPars(learner = xgb_clas_learner, par.vals = tuned_clas_fin$x), train_clas_fin)
