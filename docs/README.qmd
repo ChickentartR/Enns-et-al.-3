@@ -479,7 +479,7 @@ The Wastewater impact was calculated as the cumulative number of population equi
 
 ### Ensemble machine learning with XGBoost
 
-We first separate the available data into a training and test set by a ratio of 80% to 20% respectively.
+We first separate the available data into a training and test set by a ratio of 70% to 30% respectively.
 
 ``` r
 set.seed(1234)
