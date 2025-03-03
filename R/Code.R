@@ -1077,13 +1077,46 @@ tuned_clas_fin <- tuneParams(
 )
 parallelStop()
 
-
 # Evaluate tuning
-generateHyperParsEffectData(tuned_reg, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mse.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
-generateHyperParsEffectData(tuned_clas, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mmce.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+generateHyperParsEffectData(tuned_reg_fin, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mse.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
+generateHyperParsEffectData(tuned_clas_fin, partial.dep = T) %>% plotHyperParsEffect(x = "iteration", y = "mmce.test.mean", plot.type = "line", partial.dep.learn = xgb_reg_learner)
 
 ### 8.3 Build models ####
 
 # models
-xgb_regmodel_fin <- train(setHyperPars(learner = xgb_reg_learner, par.vals = tuned_reg_fin$x), train_reg_fin)
-xgb_clasmodel_fin <- train(setHyperPars(learner = xgb_clas_learner, par.vals = tuned_clas_fin$x), train_clas_fin)
+xgb_reg_fin <- train(setHyperPars(learner = xgb_reg_learner, nrounds = 440, max_depth = 4, eta = 0.1403, gamma = 0.1604, lambda = 0.1422), train_reg_fin)
+xgb_clas_fin <- train(setHyperPars(learner = xgb_clas_learner, par.vals = tuned_clas_fin$x), train_clas_fin)
+
+# Partial dependence
+
+# regression
+generatePartialDependenceData(xgb_reg_fin, train_reg_fin, 
+                              features = c("Urban_prop", "semi_Natural_prop", "TOT_WASTE", "dist_cros_hw_min")) %>% 
+  plotPartialDependence()
+
+# classification
+generatePartialDependenceData(xgb_clas_fin, train_clas_fin, 
+                              features = c("Urban_prop", "semi_Natural_prop", "TOT_WASTE", "dist_cros_hw_min")) %>% 
+  plotPartialDependence()
+
+## 9. Plots ####
+
+# Feature importance
+
+featimp_fin <- bind_rows(getFeatureImportance(xgb_reg_fin)$res %>% mutate(task = "regression"),
+                         getFeatureImportance(xgb_clas_fin)$res %>% mutate(task = "classification")
+                         )
+
+featimp_fin %>% filter(importance > 0) %>% 
+  ggplot(aes(y = reorder(variable, importance), x = importance, fill = importance))+
+  geom_bar(stat = "identity")+
+  scale_fill_gradient(low = "#CCCCCC", high = "#333FFF")+
+  facet_grid(. ~ task, scales = "free", space = "free")+
+  theme_bw()+
+  theme(
+    axis.title.x = element_text(size = 20, face = "bold"),
+    axis.title.y = element_blank(),
+    axis.text = element_text(size = 16),
+    stip.text = element_text(size = 20, face = "bold"),
+    legend.position = "none"
+  )
